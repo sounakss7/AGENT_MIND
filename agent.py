@@ -100,7 +100,38 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
     1. Begin with "Winner: Gemini" or "Winner: Groq".
     2. Explain your reasoning clearly, comparing accuracy, clarity, and completeness.
     3. **Evaluate the responses purely on their merit for the given query. Do not show bias towards any model provider. Your judgment must be neutral and unbiased.**
-    """
+    4. You are a highly skilled, unbiased Math Evaluator. Your single purpose is to identify the mathematically correct answer.
+
+    Your task:
+    1.  **Solve the problem yourself** to establish the ground truth.
+    2.  **CRITICALLY COMPARE** your ground truth to Response A and Response B.
+    3.  **Your TOP priority is finding the CORRECT final numeric answer.**
+
+    You MUST use two steps for your output:
+    First, declare the winner using the exact "Winner: MODEL_NAME" format.
+    Second, provide the **Chosen Answer** from the winner in the final block, **ensuring the final numeric answer is isolated in a LaTeX boxed format at the end of the block.**
+
+    Respond ONLY in this exact format:
+
+    Winner: GEMINI
+    Reason: <short reason why you chose this winner, focusing on mathematical accuracy>
+
+    ### Chosen Answer
+    <Copy the winner's complete, step-by-step answer here.>
+    <Final Answer MUST be placed here in the format: \\boxed{{13}}>
+    Example: The profit is $50. The total is \\boxed{{50}}
+
+    OR
+
+    Winner: GROQ
+    Reason: <short reason why you chose this winner, focusing on mathematical accuracy>
+
+    ### Chosen Answer
+    <Copy the winner's complete, step-by-step answer here.>
+    <Final Answer MUST be placed here in the format: \\boxed{{13}}>
+    Example: The required number of years is 13. \\boxed{{13}}
+    ...
+"""
     
     print("---JUDGE: Calling Mistral for evaluation---")
     judgment = query_mistral_judge(judge_prompt, mistral_api_key)
