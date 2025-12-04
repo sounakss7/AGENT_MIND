@@ -98,16 +98,18 @@ def answer_with_agent(question: str) -> str:
         mistral_api_key=MISTRAL_API_KEY,
     )
 
-    # Your function returns markdown like:
-    # "### 🏆 Judged Best Answer (...)\n#### Model: ...\n\n<ANSWER>\n\n### 🧠 Judge's Evaluation ..."
+    # FIXED: Use a more robust regex to extract the answer block.
+    # We find the start of the answer after the Model line, and lazily capture
+    # all content until the start of the next section (### 🧠) or end of string.
     match = re.search(
-        r"### 🏆 Judged Best Answer.*?Model:.*?\n\n(.*?)(?:\n\n### 🧠|$)",
+        r"### 🏆 Judged Best Answer.*?\n\n(.*?)(?=\n\n### 🧠|$)",
         full_output,
         re.S,
     )
     if match:
         return match.group(1).strip()
 
+    # Fallback in case the markdown structure is completely different
     return full_output.strip()
 
 
@@ -191,7 +193,7 @@ def evaluate_gsm8k(num_examples: int = 20):
 
         print("\n" + "=" * 70)
         print(f"[Q{i+1}] {question}")
-        print(f"Gold answer (raw): {gold}  -> normalized: {normalize(gold)}")
+        print(f"Gold answer (raw): {gold} 	-> normalized: {normalize(gold)}")
 
         # ---- Gemini 2.5 ----
         try:
@@ -199,7 +201,7 @@ def evaluate_gsm8k(num_examples: int = 20):
             g_ok = is_correct(g_ans, gold)
             gemini_ok += int(g_ok)
             print(f"\nGemini 2.5 answer: {g_ans}")
-            print(f"Gemini 2.5 -> {'✅' if g_ok else '❌'}  (normalized: {normalize(g_ans)})")
+            print(f"Gemini 2.5 -> {'✅' if g_ok else '❌'} 	(normalized: {normalize(g_ans)})")
         except Exception as e:
             print(f"Gemini error: {e}")
 
@@ -209,7 +211,7 @@ def evaluate_gsm8k(num_examples: int = 20):
             q_ok = is_correct(q_ans, gold)
             groq_ok += int(q_ok)
             print(f"\nGroq 120B answer: {q_ans}")
-            print(f"Groq 120B   -> {'✅' if q_ok else '❌'}  (normalized: {normalize(q_ans)})")
+            print(f"Groq 120B 	 -> {'✅' if q_ok else '❌'} 	(normalized: {normalize(q_ans)})")
         except Exception as e:
             print(f"Groq error: {e}")
 
@@ -219,17 +221,17 @@ def evaluate_gsm8k(num_examples: int = 20):
             a_ok = is_correct(a_ans, gold)
             agent_ok += int(a_ok)
             print(f"\nAgent answer: {a_ans}")
-            print(f"Agent       -> {'✅' if a_ok else '❌'}  (normalized: {normalize(a_ans)})")
+            print(f"Agent 	 	 -> {'✅' if a_ok else '❌'} 	(normalized: {normalize(a_ans)})")
         except Exception as e:
             print(f"Agent error: {e}")
 
     print("\n" + "=" * 70)
     print("📊 FINAL GSM8K RESULTS")
-    print(f"Examples:        {num_examples}")
+    print(f"Examples: 	 	{num_examples}")
     print(f"Gemini 2.5 acc.: {gemini_ok / num_examples:.3f}")
-    print(f"Groq 120B acc.:  {groq_ok / num_examples:.3f}")
-    print(f"Agent acc.:      {agent_ok / num_examples:.3f}")
+    print(f"Groq 120B acc.: 	{groq_ok / num_examples:.3f}")
+    print(f"Agent acc.: 	 	{agent_ok / num_examples:.3f}")
 
 
 if __name__ == "__main__":
-    evaluate_gsm8k(num_examples=20)   # increase later if you want
+    evaluate_gsm8k(num_examples=20)
