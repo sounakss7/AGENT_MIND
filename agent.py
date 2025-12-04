@@ -58,6 +58,9 @@ def query_mistral_judge(prompt: str, mistral_api_key: str):
         return f"Error: The Mistral judge ran into an exception: {e}"
 
 # --- MODIFIED: The evaluation tool now uses Mistral as the judge ---
+# ... (Tool 1: Comparison & Evaluation Workflow) ...
+
+# --- MODIFIED: The evaluation tool now uses Mistral as the judge ---
 def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key: str, mistral_api_key: str) -> str:
     """
     Runs a query through Gemini and Groq, has a MISTRAL AI judge evaluate the best response,
@@ -75,7 +78,7 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         gemini_response = future_gemini.result()
         groq_result = future_groq.result()
 
-    # --- MODIFIED: Handle the dict or error string from query_groq ---
+    # --- Handle the dict or error string from query_groq ---
     groq_response = ""
     groq_model_name = "Groq (Error)"
 
@@ -83,13 +86,11 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         groq_response = groq_result["content"]
         groq_model_name = groq_result["model_name"]
     else:
-        # It's an error string
         groq_response = groq_result
 
-        # -----------------------------
-    #  MATH-AWARE JUDGE PROMPT
     # -----------------------------
-    # Heuristic: does the query look like a math word problem?
+    #  MATH-AWARE JUDGE PROMPT (IMPROVED)
+    # -----------------------------
     is_math = any(word in query.lower() for word in [
         "how many", "how much", "calculate", "distance", "speed", "per hour",
         "miles", "km", "total", "ratio", "children", "apples", "sum",
@@ -97,26 +98,27 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
     ]) or bool(re.search(r"\d", query))
 
     if is_math:
+        # STRONGER INSTRUCTIONS FOR MISTRAL
         judge_prompt = f"""
-You are evaluating answers to a math word problem.
+You are a highly skilled, unbiased Math Evaluator. Your single purpose is to identify the mathematically correct answer.
 
 Your task:
-1. Carefully solve the problem yourself to find the true final numeric answer.
-2. Compare your own final numeric answer with each response.
-3. Your TOP priority is: which response has the correct final number.
-4. Ignore writing style, politeness, or formatting.
-5. If both are correct, choose the clearer explanation.
-6. If both are wrong, choose the one closest to your computed answer.
+1.  **Solve the problem yourself** to establish the ground truth.
+2.  **CRITICALLY COMPARE** the ground truth to Response A and Response B.
+3.  **Your TOP priority is finding the CORRECT final numeric answer.**
+4.  If both are correct, choose the clearer and more step-by-step response.
+5.  If both are wrong, choose the response that demonstrates the correct method, even if the final calculation has an error.
+6.  You MUST output the winner's name on the first line.
 
-Respond ONLY in this format:
+Respond ONLY in this exact format, with the winner capitalized:
 
-Winner: Gemini
-Reason: <short reason>
+Winner: GEMINI
+Reason: <short reason why you chose this winner, focusing on mathematical accuracy>
 
 OR
 
-Winner: Groq
-Reason: <short reason>
+Winner: GROQ
+Reason: <short reason why you chose this winner, focusing on mathematical accuracy>
 
 ---
 
@@ -130,7 +132,7 @@ Reason: <short reason>
 {groq_response}
 """
     else:
-        # Generic judge prompt for non-math tasks
+        # Generic judge prompt for non-math tasks (unchanged)
         judge_prompt = f"""
 You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
 
@@ -153,25 +155,32 @@ Instructions:
     print("---JUDGE: Calling Mistral for evaluation---")
     judgment = query_mistral_judge(judge_prompt, mistral_api_key)
 
-    # Try to read "Winner: Gemini" or "Winner: Groq"
+    # --- IMPROVED: Robustly extract winner, prioritizing accuracy over model bias ---
+    # Look for any instance of 'gemini' or 'groq' after 'winner'
     match = re.search(r"winner\s*:\s*(gemini|groq)", judgment, re.IGNORECASE)
-    winner_name = match.group(1).capitalize() if match else "Gemini"  # default to Gemini
+    winner_name = match.group(1).capitalize() if match else "Error/Fallback" # No longer defaults to Gemini
 
-    # Small numeric helper
+    # Small numeric helper (kept)
     def extract_last_number(text: str):
         nums = re.findall(r"-?\d+\.?\d*", text)
         return nums[-1] if nums else None
 
-    # Extra safety for math: if both answers give the same number, prefer Gemini
-    if is_math:
+    # --- MODIFIED: REMOVE BIAS. If judge failed to pick a winner,
+    # choose the one whose response has a numerical answer.
+    if winner_name == "Error/Fallback":
         g_num = extract_last_number(gemini_response)
         q_num = extract_last_number(groq_response)
-        if g_num and q_num and g_num == q_num:
+        
+        if g_num and not q_num:
+            winner_name = "Gemini"
+        elif q_num and not g_num:
+            winner_name = "Groq"
+        # If both are missing or both have a number, default to Gemini (least biased fallback)
+        else:
             winner_name = "Gemini"
 
-        # If the judge output didn't clearly specify a winner, default to Gemini
-        if not match:
-            winner_name = "Gemini"
+    # --- REMOVED: The logic that forced Gemini to win if both numbers matched.
+    # This was a major source of Groq's correct answers being discarded.
 
     # --- WINNER / LOSER SELECTION ---
 
@@ -181,6 +190,7 @@ Instructions:
     loser_model_name = ""
     loser_name = ""
 
+    # (Logic for setting chosen/loser answers remains the same and is correct)
     if winner_name == "Gemini":
         chosen_answer = gemini_response
         chosen_model_name = gemini_model_name
@@ -194,7 +204,7 @@ Instructions:
         loser_model_name = gemini_model_name
         loser_name = "Gemini"
     else:
-        # Fallback if something weird happens
+        # Final fallback - should be rare now
         chosen_answer = gemini_response
         chosen_model_name = gemini_model_name
         loser_response = groq_response
@@ -213,7 +223,6 @@ Instructions:
     final_output += f"#### Model: {loser_model_name}\n\n{loser_response}"
 
     return final_output
-
 # ===================================================================
 # TOOL 2: IMAGE GENERATION TOOL (Unchanged)
 # ===================================================================
