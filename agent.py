@@ -99,16 +99,6 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
     1. Begin with "Winner: Gemini" or "Winner: Groq".
     2. Explain your reasoning clearly, comparing accuracy, clarity, and completeness.
     3. **Evaluate the responses purely on their merit for the given query. Do not show bias towards any model provider. Your judgment must be neutral and unbiased.**
-    4. You are evaluating answers to a math word problem.
-
-    IMPORTANT:
-    - Your ONLY goal is: which response has the CORRECT FINAL NUMERIC ANSWER.
-    - Ignore style, phrasing, length, or formatting.
-    - If both are correct, choose the one with clearer step-by-step logic.
-    - If both are wrong, choose the one that is CLOSER to the true answer.
-
-    First, carefully solve the problem yourself.
-    Then compare your own final numeric answer with each response.
 
     """
     
