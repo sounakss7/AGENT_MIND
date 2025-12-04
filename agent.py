@@ -86,30 +86,95 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         # It's an error string
         groq_response = groq_result
 
-    judge_prompt = f"""
-    You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
-    ### User Query:
-    {query}
-    ### Response A (Gemini):
-    {gemini_response}
-    ### Response B (Groq - model: {groq_model_name}):
-    {groq_response}
+        # -----------------------------
+    #  MATH-AWARE JUDGE PROMPT
+    # -----------------------------
+    # Heuristic: does the query look like a math word problem?
+    is_math = any(word in query.lower() for word in [
+        "how many", "how much", "calculate", "distance", "speed", "per hour",
+        "miles", "km", "total", "ratio", "children", "apples", "sum",
+        "difference", "percent", "percentage", "profit", "loss", "time"
+    ]) or bool(re.search(r"\d", query))
 
-    Instructions:
-    1. Begin with "Winner: Gemini" or "Winner: Groq".
-    2. Explain your reasoning clearly, comparing accuracy, clarity, and completeness.
-    3. **Evaluate the responses purely on their merit for the given query. Do not show bias towards any model provider. Your judgment must be neutral and unbiased.**
+    if is_math:
+        judge_prompt = f"""
+You are evaluating answers to a math word problem.
 
-    """
-    
+Your task:
+1. Carefully solve the problem yourself to find the true final numeric answer.
+2. Compare your own final numeric answer with each response.
+3. Your TOP priority is: which response has the correct final number.
+4. Ignore writing style, politeness, or formatting.
+5. If both are correct, choose the clearer explanation.
+6. If both are wrong, choose the one closest to your computed answer.
+
+Respond ONLY in this format:
+
+Winner: Gemini
+Reason: <short reason>
+
+OR
+
+Winner: Groq
+Reason: <short reason>
+
+---
+
+### Math Problem:
+{query}
+
+### Response A (Gemini):
+{gemini_response}
+
+### Response B (Groq - model: {groq_model_name}):
+{groq_response}
+"""
+    else:
+        # Generic judge prompt for non-math tasks
+        judge_prompt = f"""
+You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
+
+### User Query:
+{query}
+
+### Response A (Gemini):
+{gemini_response}
+
+### Response B (Groq - model: {groq_model_name}):
+{groq_response}
+
+Instructions:
+1. Begin with "Winner: Gemini" or "Winner: Groq".
+2. Compare correctness, helpfulness, and completeness.
+3. Evaluate the responses purely on their merit for the given query.
+4. Do not show bias towards any model provider. Your judgment must be neutral and unbiased.
+"""
+
     print("---JUDGE: Calling Mistral for evaluation---")
     judgment = query_mistral_judge(judge_prompt, mistral_api_key)
-    
+
+    # Try to read "Winner: Gemini" or "Winner: Groq"
     match = re.search(r"winner\s*:\s*(gemini|groq)", judgment, re.IGNORECASE)
-    winner_name = match.group(1).capitalize() if match else "Evaluation"
-    
-    # --- THIS IS THE NEW LOGIC YOU REQUESTED ---
-    
+    winner_name = match.group(1).capitalize() if match else "Gemini"  # default to Gemini
+
+    # Small numeric helper
+    def extract_last_number(text: str):
+        nums = re.findall(r"-?\d+\.?\d*", text)
+        return nums[-1] if nums else None
+
+    # Extra safety for math: if both answers give the same number, prefer Gemini
+    if is_math:
+        g_num = extract_last_number(gemini_response)
+        q_num = extract_last_number(groq_response)
+        if g_num and q_num and g_num == q_num:
+            winner_name = "Gemini"
+
+        # If the judge output didn't clearly specify a winner, default to Gemini
+        if not match:
+            winner_name = "Gemini"
+
+    # --- WINNER / LOSER SELECTION ---
+
     chosen_answer = ""
     chosen_model_name = ""
     loser_response = ""
@@ -129,18 +194,17 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         loser_model_name = gemini_model_name
         loser_name = "Gemini"
     else:
-        # Fallback if regex fails to find a clear winner
-        chosen_answer = gemini_response # Default to Gemini
+        # Fallback if something weird happens
+        chosen_answer = gemini_response
         chosen_model_name = gemini_model_name
         loser_response = groq_response
         loser_model_name = groq_model_name
         loser_name = "Groq"
 
-
     # 1. The Winner's Response
     final_output = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
-    
+
     # 2. The Judge's Evaluation
     final_output += f"### 🧠 Judge's Evaluation (from Mistral)\n{judgment}\n\n---\n\n"
 
@@ -148,8 +212,6 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
     final_output += f"### Other Response ({loser_name})\n\n"
     final_output += f"#### Model: {loser_model_name}\n\n{loser_response}"
 
-    # --- END OF MODIFIED LOGIC ---
-    
     return final_output
 
 # ===================================================================
