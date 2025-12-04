@@ -116,30 +116,61 @@ def answer_with_agent(question: str) -> str:
 def extract_gsm8k_answer(raw: str) -> str:
     """
     GSM8K gold answers often end with '#### 42'.
-    This extracts the '42' part.
+    This extracts the '42' part (but we still normalize further below).
     """
     match = re.search(r"####\s*([^\n]+)", raw)
     if match:
         return match.group(1).strip()
-    nums = re.findall(r"-?\d+\.?\d*", raw)
-    return nums[-1] if nums else raw.strip()
+    return raw.strip()
+
+
+def extract_final_number(text: str) -> str | None:
+    """
+    Extract the final numeric answer from any model output by:
+    - Handling LaTeX \boxed{7}
+    - Removing commas in numbers (57,500 -> 57500)
+    - Stripping markdown symbols (*, $, `)
+    - Grabbing the LAST number mentioned (models usually end with the final answer)
+    """
+    if text is None:
+        return None
+
+    # Remove LaTeX boxed
+    clean = re.sub(r"\\boxed\{([^}]*)\}", r"\1", text)
+
+    # Remove commas inside numbers and common wrappers
+    clean = clean.replace(",", "")
+    clean = re.sub(r"[\*\$`]", "", clean)
+
+    # Find all integer / float numbers
+    nums = re.findall(r"-?\d+\.?\d*", clean)
+    if not nums:
+        return None
+
+    return nums[-1]
 
 
 def normalize(ans: str) -> str:
     """
-    Normalise answers by:
-    - taking the last number if present
-    - otherwise lowercasing and stripping
+    Normalize an answer for comparison:
+    - Prefer the final numeric value if present
+    - Else, lowercase trimmed text
     """
-    ans = ans.strip()
-    nums = re.findall(r"-?\d+\.?\d*", ans)
-    if nums:
-        return nums[-1]
-    return ans.lower()
+    if ans is None:
+        return ""
+    num = extract_final_number(ans)
+    if num is not None:
+        return num
+    return ans.strip().lower()
 
 
 def is_correct(pred: str, gold: str) -> bool:
-    return normalize(pred) == normalize(gold)
+    """
+    Compare predicted vs gold answer after normalization.
+    """
+    pred_norm = normalize(pred)
+    gold_norm = normalize(gold)
+    return str(pred_norm) == str(gold_norm)
 
 
 # ================= 4. Main evaluation loop =================
@@ -160,14 +191,15 @@ def evaluate_gsm8k(num_examples: int = 20):
 
         print("\n" + "=" * 70)
         print(f"[Q{i+1}] {question}")
-        print(f"Gold answer: {gold}")
+        print(f"Gold answer (raw): {gold}  -> normalized: {normalize(gold)}")
 
         # ---- Gemini 2.5 ----
         try:
             g_ans = answer_with_gemini(question)
             g_ok = is_correct(g_ans, gold)
             gemini_ok += int(g_ok)
-            print(f"Gemini 2.5: {g_ans}  -> {'✅' if g_ok else '❌'}")
+            print(f"\nGemini 2.5 answer: {g_ans}")
+            print(f"Gemini 2.5 -> {'✅' if g_ok else '❌'}  (normalized: {normalize(g_ans)})")
         except Exception as e:
             print(f"Gemini error: {e}")
 
@@ -176,7 +208,8 @@ def evaluate_gsm8k(num_examples: int = 20):
             q_ans = answer_with_groq_120b(question)
             q_ok = is_correct(q_ans, gold)
             groq_ok += int(q_ok)
-            print(f"Groq 120B:   {q_ans}  -> {'✅' if q_ok else '❌'}")
+            print(f"\nGroq 120B answer: {q_ans}")
+            print(f"Groq 120B   -> {'✅' if q_ok else '❌'}  (normalized: {normalize(q_ans)})")
         except Exception as e:
             print(f"Groq error: {e}")
 
@@ -185,7 +218,8 @@ def evaluate_gsm8k(num_examples: int = 20):
             a_ans = answer_with_agent(question)
             a_ok = is_correct(a_ans, gold)
             agent_ok += int(a_ok)
-            print(f"Agent:       {a_ans}  -> {'✅' if a_ok else '❌'}")
+            print(f"\nAgent answer: {a_ans}")
+            print(f"Agent       -> {'✅' if a_ok else '❌'}  (normalized: {normalize(a_ans)})")
         except Exception as e:
             print(f"Agent error: {e}")
 
