@@ -88,6 +88,17 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
 
     judge_prompt = f"""
     You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
+    You are evaluating answers to a math word problem.
+
+    IMPORTANT:
+    - Your ONLY goal is: which response has the CORRECT FINAL NUMERIC ANSWER.
+    - Ignore style, phrasing, length, or formatting.
+    - If both are correct, choose the one with clearer step-by-step logic.
+    - If both are wrong, choose the one that is CLOSER to the true answer.
+
+    First, carefully solve the problem yourself.
+    Then compare your own final numeric answer with each response.
+
 
     ### User Query:
     {query}
