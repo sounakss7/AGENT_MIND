@@ -2,8 +2,8 @@
 """
 Benchmark on GSM8K:
 - Gemini 2.5 Flash alone
-- Groq alone
-- Your multi-agent orchestrator (Gemini 2.5 + Groq + Mistral judge)
+- Groq (openai/gpt-oss-120b via your choose_groq_model) alone
+- Your multi-agent orchestrator (Gemini 2.5 + Groq 120B + Mistral judge)
 
 Run from project root:
     python benchmark_eval.py
@@ -41,19 +41,17 @@ if not GOOGLE_API_KEY or not GROQ_API_KEY or not MISTRAL_API_KEY:
 def answer_with_gemini(question: str) -> str:
     """
     Baseline: Gemini 2.5 Flash alone.
-    Uses the SAME model you use in your app: gemini-2.5-flash.
     """
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         google_api_key=GOOGLE_API_KEY,
     )
 
-    # We allow it to explain if it wants; we'll just extract the final number.
     prompt = f"""
-You are solving a math word problem.
+You are solving a mathematics word problem.
 
-- You may show your reasoning.
-- But end your answer with the final numeric result on the last line.
+You may show reasoning, but make sure the **final numeric answer**
+appears clearly on the last line.
 
 Question:
 {question}
@@ -63,49 +61,53 @@ Answer:
     return llm.invoke(prompt).content.strip()
 
 
-def answer_with_groq(question: str) -> str:
+def answer_with_groq_120b(question: str) -> str:
     """
-    Baseline: Groq (your choose_groq_model + query_groq logic).
+    Baseline: Groq, but routed so choose_groq_model() selects openai/gpt-oss-120b.
+
+    We prepend a short hint ("This is a mathematics word problem...")
+    so your choose_groq_model() sees words like 'mathematics' and
+    picks the 120B model.
     """
-    result = query_groq(question, GROQ_API_KEY)
+    routed_question = (
+        "This is a mathematics word problem. Solve it carefully step by step.\n\n"
+        + question
+    )
+    result = query_groq(routed_question, GROQ_API_KEY)
     if isinstance(result, dict):
         return result["content"].strip()
-    # if query_groq returned an error string
-    return ""
+    return ""  # if query_groq returned an error string
 
 
 def answer_with_agent(question: str) -> str:
     """
-    Your full multi-agent pipeline:
-    Gemini 2.5 + Groq + Mistral judge.
+    Your full multi-agent pipeline: Gemini 2.5 + Groq (120B) + Mistral judge.
 
-    Uses comparison_and_evaluation_tool from agent.py and
-    extracts ONLY the 'Judged Best Answer' section.
+    We call comparison_and_evaluation_tool() with the same 'routed' question
+    so internally choose_groq_model() also selects openai/gpt-oss-120b.
     """
+    routed_question = (
+        "This is a mathematics word problem. Solve it carefully step by step.\n\n"
+        + question
+    )
+
     full_output = comparison_and_evaluation_tool(
-        query=question,
+        query=routed_question,
         google_api_key=GOOGLE_API_KEY,
         groq_api_key=GROQ_API_KEY,
         mistral_api_key=MISTRAL_API_KEY,
     )
 
     # Your function returns markdown like:
-    # ### 🏆 Judged Best Answer (...)
-    # #### Model: ...
-    #
-    # <ANSWER>
-    #
-    # ### 🧠 Judge's Evaluation ...
+    # "### 🏆 Judged Best Answer (...)\n#### Model: ...\n\n<ANSWER>\n\n### 🧠 Judge's Evaluation ..."
     match = re.search(
         r"### 🏆 Judged Best Answer.*?Model:.*?\n\n(.*?)(?:\n\n### 🧠|$)",
         full_output,
         re.S,
     )
     if match:
-        best_answer = match.group(1).strip()
-        return best_answer
+        return match.group(1).strip()
 
-    # Fallback: give everything back if parsing fails
     return full_output.strip()
 
 
@@ -144,7 +146,7 @@ def is_correct(pred: str, gold: str) -> bool:
 
 def evaluate_gsm8k(num_examples: int = 20):
     """
-    Evaluate Gemini 2.5, Groq, and your agent on first N GSM8K test problems.
+    Evaluate Gemini 2.5, Groq 120B, and your agent on first N GSM8K test problems.
     """
     print(f"\n📘 Loading GSM8K test split (first {num_examples} examples)...")
     ds = load_dataset("gsm8k", "main")["test"].select(range(num_examples))
@@ -169,21 +171,21 @@ def evaluate_gsm8k(num_examples: int = 20):
         except Exception as e:
             print(f"Gemini error: {e}")
 
-        # ---- Groq ----
+        # ---- Groq 120B ----
         try:
-            q_ans = answer_with_groq(question)
+            q_ans = answer_with_groq_120b(question)
             q_ok = is_correct(q_ans, gold)
             groq_ok += int(q_ok)
-            print(f"Groq:       {q_ans}  -> {'✅' if q_ok else '❌'}")
+            print(f"Groq 120B:   {q_ans}  -> {'✅' if q_ok else '❌'}")
         except Exception as e:
             print(f"Groq error: {e}")
 
-        # ---- Your Agent ----
+        # ---- Your Agent (Gemini + Groq + Mistral) ----
         try:
             a_ans = answer_with_agent(question)
             a_ok = is_correct(a_ans, gold)
             agent_ok += int(a_ok)
-            print(f"Agent:      {a_ans}  -> {'✅' if a_ok else '❌'}")
+            print(f"Agent:       {a_ans}  -> {'✅' if a_ok else '❌'}")
         except Exception as e:
             print(f"Agent error: {e}")
 
@@ -191,9 +193,9 @@ def evaluate_gsm8k(num_examples: int = 20):
     print("📊 FINAL GSM8K RESULTS")
     print(f"Examples:        {num_examples}")
     print(f"Gemini 2.5 acc.: {gemini_ok / num_examples:.3f}")
-    print(f"Groq acc.:       {groq_ok / num_examples:.3f}")
+    print(f"Groq 120B acc.:  {groq_ok / num_examples:.3f}")
     print(f"Agent acc.:      {agent_ok / num_examples:.3f}")
 
 
 if __name__ == "__main__":
-    evaluate_gsm8k(num_examples=20)   # you can increase later
+    evaluate_gsm8k(num_examples=20)   # increase later if you want
