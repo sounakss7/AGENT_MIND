@@ -250,4 +250,4 @@ def evaluate_gsm8k(num_examples: int = 20):
 
 
 if __name__ == "__main__":
-    evaluate_gsm8k(num_examples=10)
+    evaluate_gsm8k(num_examples=20)
