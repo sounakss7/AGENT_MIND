@@ -123,7 +123,7 @@ def set_animated_fluid_background():
 # =====================
 # Page Config and Setup
 # =====================
-st.set_page_config(page_title="🤖 AI Agent Workshop", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="🤖 Neuroplexa AI", page_icon="🧠", layout="wide")
 set_animated_fluid_background()
 # --- Securely load API keys from Streamlit Secrets ---
 try:
