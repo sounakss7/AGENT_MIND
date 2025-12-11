@@ -157,7 +157,7 @@ if "metrics" not in st.session_state:
 # =====================
 # Main Application UI & Sidebar (Unchanged)
 # =====================
-st.title("🧠 AI Agent Workshop")
+st.title("🧠 Neuroplexa AI")
 st.write("I can search the web, create images, analyze documents, and more!")
 
 with st.sidebar:
