@@ -192,7 +192,7 @@ Now, transform the user's prompt into a 'Top Class' masterpiece.
         
         # Use the new API endpoint (gen.pollinations.ai)
         # We explicitly request the 'flux' model for better quality, matching the docs screenshot
-        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=flux"
+        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=nanobanana"
         
         # Pass the API key in the headers as a Bearer token
         headers = {
