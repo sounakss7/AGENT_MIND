@@ -159,11 +159,11 @@ def image_generation_tool(prompt: str, google_api_key: str, pollinations_token: 
     """Use this tool when the user asks to create, draw, or generate an image."""
     logging.info(f"---TOOL: Generating Image for prompt: '{prompt}'---")
     try:
+        # 1. Enhance the prompt using Gemini
         enhancer_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
         
-        # --- MODIFIED: This is the new "Top Class" prompt enhancer ---
         enhancer_prompt = f"""
-You are a "Top Class" prompt engineer, a master of visual language. Your job is to rewrite a user's simple prompt into a hyper-detailed, vibrant, and masterful image generation description. The output must be optimized for a model like Pollinations.ai (which uses Stable Diffusion).
+You are a "Top Class" prompt engineer, a master of visual language. Your job is to rewrite a user's simple prompt into a hyper-detailed, vibrant, and masterful image generation description. The output must be optimized for a model like Pollinations.ai (which uses Stable Diffusion/Flux).
 
 The user's prompt is: "{prompt}"
 
@@ -183,18 +183,30 @@ The user's prompt is: "{prompt}"
 
 Now, transform the user's prompt into a 'Top Class' masterpiece.
 """
-        # --- END OF MODIFIED SECTION ---
-        
         final_prompt = enhancer_llm.invoke(enhancer_prompt).content.strip()
         
+        # 2. Encode the enhanced prompt for the URL
         encoded_prompt = quote_plus(final_prompt)
         
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?token={pollinations_token}"
+        # --- UPDATED SECTION START ---
         
-        response = requests.get(url, timeout=120)
+        # Use the new API endpoint (gen.pollinations.ai)
+        # We explicitly request the 'flux' model for better quality, matching the docs screenshot
+        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=flux"
+        
+        # Pass the API key in the headers as a Bearer token
+        headers = {
+            "Authorization": f"Bearer {pollinations_token}"
+        }
+        
+        # Make the request with headers
+        response = requests.get(url, headers=headers, timeout=120)
+        
+        # --- UPDATED SECTION END ---
         
         response.raise_for_status() 
         
+        # 3. Process the image bytes
         img_bytes = response.content
         img = Image.open(BytesIO(img_bytes))
         
