@@ -205,6 +205,17 @@ with st.sidebar:
     if metrics["total_requests"] > 0:
         tool_df = pd.DataFrame(list(metrics["tool_usage"].items()), columns=['Tool', 'Count'])
         st.bar_chart(tool_df.set_index('Tool'), height=150)
+        
+    st.subheader("📈 Live App Accuracy")
+    total_feedback = metrics["accuracy_feedback"]["👍"] + metrics["accuracy_feedback"]["👎"]
+    if total_feedback > 0:
+        positive_rate = (metrics["accuracy_feedback"]["👍"] / total_feedback) * 100
+        st.metric("Positive Feedback Rate", f"{positive_rate:.1f}%")
+    else:
+        st.info("No feedback yet.")
+
+    with st.expander("🕵️ See Last Query Details"):
+        st.json(metrics["last_query_details"])
 
 # =================================================================================
 # CHAT DISPLAY LOGIC
