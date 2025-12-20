@@ -3,10 +3,9 @@ import re
 import requests
 from io import BytesIO
 from PIL import Image
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage
-from langchain.schema import BaseMessage
+from langchain.schema import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 import concurrent.futures
 from functools import partial
@@ -15,12 +14,25 @@ from urllib.parse import quote_plus
 import logging
 
 # =======================================================================================
-# TOOL 1: THE COMPARISON & EVALUATION WORKFLOW (Judged by Mistral)
+# HELPER FUNCTIONS
 # =======================================================================================
 
+def format_history(history: List[BaseMessage]) -> str:
+    """Formats the last few turns of history into a string for the LLM."""
+    if not history:
+        return "No previous context."
+    # Take last 4 messages to save context window and reduce cost
+    recent_history = history[-4:] 
+    formatted = ""
+    for msg in recent_history:
+        role = "User" if isinstance(msg, HumanMessage) else "Assistant"
+        formatted += f"{role}: {msg.content}\n"
+    return formatted
+
 def choose_groq_model(prompt: str):
+    """Selects the best Groq model based on the complexity of the prompt."""
     p = prompt.lower()
-    if any(x in p for x in ["python", "code", "algorithm", "bug", "function", "script" ,"information" , "analysis" , "solution" , "NLP" ,"essay" , "mathematics" ,"research" ,"reasoning"]):
+    if any(x in p for x in ["python", "code", "algorithm", "bug", "function", "script" ,"information" , "analysis" , "solution" , "nlp" ,"essay" , "mathematics" ,"research" ,"reasoning"]):
         return "openai/gpt-oss-120b"
     else:
         return "llama-3.1-8b-instant"
@@ -34,13 +46,11 @@ def query_groq(prompt: str, groq_api_key: str):
         resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=data, headers=headers)
         if resp.status_code == 200:
             content = resp.json()["choices"][0]["message"]["content"]
-            # ---MODIFIED: Return a dict to include the model name ---
             return {"model_name": model, "content": content} 
         return f"❌ Groq API Error: {resp.text}"
     except Exception as e:
         return f"⚠️ Groq Error: {e}"
 
-# --- NEW: Dedicated function to call Mistral for judging ---
 def query_mistral_judge(prompt: str, mistral_api_key: str):
     """A dedicated function to call Mistral for judging."""
     model = "mistral-small-latest"
@@ -57,25 +67,41 @@ def query_mistral_judge(prompt: str, mistral_api_key: str):
         logging.error(f"Mistral Judge Exception: {e}")
         return f"Error: The Mistral judge ran into an exception: {e}"
 
-# --- MODIFIED: The evaluation tool now uses Mistral as the judge ---
-def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key: str, mistral_api_key: str) -> str:
+# =======================================================================================
+# TOOL 1: THE COMPARISON & EVALUATION WORKFLOW (Judged by Mistral)
+# =======================================================================================
+
+def comparison_and_evaluation_tool(query: str, history: List[BaseMessage], google_api_key: str, groq_api_key: str, mistral_api_key: str) -> str:
     """
-    Runs a query through Gemini and Groq, has a MISTRAL AI judge evaluate the best response,
-    and formats everything into a comprehensive answer.
+    Runs a query through Gemini and Groq, using conversation history for context,
+    has a MISTRAL AI judge evaluate the best response, and formats the output.
     """
-    print("---TOOL: Executing Comparison (Judged by Mistral)---")
+    print("---TOOL: Executing Comparison (Judged by Mistral with Memory)---")
     
+    # 1. Prepare the contextual prompt
+    context_str = format_history(history)
+    
+    full_prompt_with_context = f"""
+    PREVIOUS CONVERSATION CONTEXT:
+    {context_str}
+    
+    CURRENT USER REQUEST:
+    {query}
+    
+    Instructions: Respond to the CURRENT USER REQUEST. Use the previous context ONLY if the user is asking a follow-up question (like "rewrite that", "explain more", "fix the code", "what did you mean"). Otherwise, answer the current request directly.
+    """
+
     fast_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
     gemini_model_name = "gemini-2.5-flash"
     
+    # 2. Run models in parallel using the contextual prompt
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_gemini = executor.submit(lambda: fast_llm.invoke(query).content)
-        future_groq = executor.submit(query_groq, query, groq_api_key)
+        future_gemini = executor.submit(lambda: fast_llm.invoke(full_prompt_with_context).content)
+        future_groq = executor.submit(query_groq, full_prompt_with_context, groq_api_key)
         
         gemini_response = future_gemini.result()
         groq_result = future_groq.result()
 
-    # --- MODIFIED: Handle the dict or error string from query_groq ---
     groq_response = ""
     groq_model_name = "Groq (Error)"
 
@@ -83,14 +109,18 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         groq_response = groq_result["content"]
         groq_model_name = groq_result["model_name"]
     else:
-        # It's an error string
         groq_response = groq_result
 
+    # 3. Judge the responses, also providing it with context
     judge_prompt = f"""
     You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
 
-    ### User Query:
+    ### Conversation Context:
+    {context_str}
+
+    ### Current User Query:
     {query}
+    
     ### Response A (Gemini):
     {gemini_response}
     ### Response B (Groq - model: {groq_model_name}):
@@ -98,8 +128,8 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
 
     Instructions:
     1. Begin with "Winner: Gemini" or "Winner: Groq".
-    2. Explain your reasoning clearly, comparing accuracy, clarity, and completeness.
-    3. **Evaluate the responses purely on their merit for the given query. Do not show bias towards any model provider. Your judgment must be neutral and unbiased.**
+    2. Explain your reasoning clearly. Did the models handle the context/follow-up correctly?
+    3. Evaluate purely on merit. Do not show bias.
     """
     
     print("---JUDGE: Calling Mistral for evaluation---")
@@ -107,8 +137,6 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
     
     match = re.search(r"winner\s*:\s*(gemini|groq)", judgment, re.IGNORECASE)
     winner_name = match.group(1).capitalize() if match else "Evaluation"
-    
-    # --- THIS IS THE NEW LOGIC YOU REQUESTED ---
     
     chosen_answer = ""
     chosen_model_name = ""
@@ -129,31 +157,25 @@ def comparison_and_evaluation_tool(query: str, google_api_key: str, groq_api_key
         loser_model_name = gemini_model_name
         loser_name = "Gemini"
     else:
-        # Fallback if regex fails to find a clear winner
-        chosen_answer = gemini_response # Default to Gemini
+        # Fallback to Gemini
+        chosen_answer = gemini_response 
         chosen_model_name = gemini_model_name
         loser_response = groq_response
         loser_model_name = groq_model_name
         loser_name = "Groq"
 
 
-    # 1. The Winner's Response
+    # 4. Format the final output
     final_output = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
-    
-    # 2. The Judge's Evaluation
     final_output += f"### 🧠 Judge's Evaluation (from Mistral)\n{judgment}\n\n---\n\n"
-
-    # 3. The Loser's Response
     final_output += f"### Other Response ({loser_name})\n\n"
     final_output += f"#### Model: {loser_model_name}\n\n{loser_response}"
-
-    # --- END OF MODIFIED LOGIC ---
     
     return final_output
 
 # ===================================================================
-# TOOL 2: IMAGE GENERATION TOOL (Unchanged)
+# TOOL 2: IMAGE GENERATION TOOL
 # ===================================================================
 def image_generation_tool(prompt: str, google_api_key: str, pollinations_token: str) -> dict:
     """Use this tool when the user asks to create, draw, or generate an image."""
@@ -163,50 +185,26 @@ def image_generation_tool(prompt: str, google_api_key: str, pollinations_token: 
         enhancer_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
         
         enhancer_prompt = f"""
-You are a "Top Class" prompt engineer, a master of visual language. Your job is to rewrite a user's simple prompt into a hyper-detailed, vibrant, and masterful image generation description. The output must be optimized for a model like Pollinations.ai (which uses Stable Diffusion/Flux).
+You are a "Top Class" prompt engineer. Your job is to rewrite a user's simple prompt into a hyper-detailed, vibrant image generation description.
 
 The user's prompt is: "{prompt}"
 
----
-**The Formula for a 'Top Class' Prompt (Follow this structure):**
-1.  **Core Subject:** Start with a hyper-detailed description of the main subject (e.g., "A majestic dragon with shimmering emerald scales and glowing blue eyes...").
-2.  **Style & Medium:** This is critical. `digital painting`, `photograph`, `oil on canvas`, `3D render`, `anime key visual`, `watercolor`.
-3.  **Scene & Environment:** Describe the background. `in a forgotten temple`, `on a neon-lit cyberpunk street`, `in a sun-drenched meadow`.
-4.  **Lighting & Atmosphere:** Set the mood. `cinematic lighting`, `volumetric god rays`, `eerie, foggy night`, `warm afternoon sun`, `dramatic shadows`.
-5.  **Artist & Platform Keywords:** This adds huge power. `trending on ArtStation`, `Unreal Engine 5`, `V-Ray render`, `by Greg Rutkowski and Artgerm`.
-6.  **Technical Details:** The "magic keywords." `8k`, `UHD`, `hyper-detailed`, `intricate details`, `sharp focus`, `depth of field (bokeh)`, `f/1.8`.
-
----
-**Example Transformation:**
-* **User Prompt:** "a cat in a hat"
-* **Your 'Top Class' Prompt:** "A hyper-detailed, photorealistic 8k close-up portrait of a fluffy ginger cat wearing a tiny, dapper felt fedora, cinematic lighting with a shallow depth of field, sharp focus on the cat's vibrant green eyes, trending on ArtStation, shot on a Sony A7R IV."
-
-Now, transform the user's prompt into a 'Top Class' masterpiece.
+Transform this into a 'Top Class' masterpiece description (Subject, Style, Lighting, Technicals).
 """
         final_prompt = enhancer_llm.invoke(enhancer_prompt).content.strip()
         
-        # 2. Encode the enhanced prompt for the URL
+        # 2. Encode and Request
         encoded_prompt = quote_plus(final_prompt)
-        
-        # --- UPDATED SECTION START ---
-        
-        # Use the new API endpoint (gen.pollinations.ai)
-        # We explicitly request the 'flux' model for better quality, matching the docs screenshot
         url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=nanobanana-pro"
         
-        # Pass the API key in the headers as a Bearer token
         headers = {
             "Authorization": f"Bearer {pollinations_token}"
         }
         
-        # Make the request with headers
         response = requests.get(url, headers=headers, timeout=120)
-        
-        # --- UPDATED SECTION END ---
-        
         response.raise_for_status() 
         
-        # 3. Process the image bytes
+        # 3. Process image
         img_bytes = response.content
         img = Image.open(BytesIO(img_bytes))
         
@@ -218,32 +216,27 @@ Now, transform the user's prompt into a 'Top Class' masterpiece.
     
     except requests.exceptions.ReadTimeout as timeout_err:
         logging.error(f"Image generation timed out: {timeout_err}")
-        return {"error": "The image generation service timed out (took longer than 120s). It might be very busy. Please try again in a moment."}
+        return {"error": "The image generation service timed out. Please try again."}
     
     except Exception as e:
         logging.error(f"An unexpected error occurred in image generation: {e}")
         return {"error": f"Failed to generate image: {e}"}
+
 # ===================================================================
-# TOOL 3: FILE ANALYSIS TOOL (Unchanged)
+# TOOL 3: FILE ANALYSIS TOOL
 # ===================================================================
 
 def file_analysis_tool(question: str, file_content_as_text: str, google_api_key: str):
     """
-    Use this tool when the user has uploaded a file and is asking a question about it.
-    This tool is now empowered to use its own expertise to provide a comprehensive analysis.
+    Analyzes uploaded files with expert persona context.
     """
     print("---TOOL: Executing Empowered File Analysis---")
     streaming_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key, streaming=True) 
     
     prompt = f"""
-    **Your Persona:** You are a highly intelligent AI assistant and a multi-disciplinary expert. Your goal is to provide the most helpful and insightful analysis possible, combining the provided file content with your own vast knowledge.
-
-    **The Task:** A user has uploaded a file and asked a question. Use the file content as the primary source of truth and context, but you are encouraged to enrich your answer with your own expertise, especially when asked for an evaluation, opinion, or a subjective score.
-
-    **How to Behave Based on File Content:**
-    * **If the file appears to be CODE (e.g., Python, JavaScript, etc.):** Act as a senior software engineer. Analyze its structure, logic, efficiency, and style. If the user asks for a score or review, provide a thoughtful evaluation with justifications and suggestions for improvement.
-    * **If the file appears to be TEXT (e.g., an article, report, essay):** Act as a research analyst. Summarize key points, extract specific information, and answer the user's questions. You can add relevant context from your own knowledge if it enhances the answer (e.g., providing historical context for an article).
-    * **For all other file types:** Do your best to interpret the text content and provide a helpful, intelligent response to the user's question.
+    **Your Persona:** You are a highly intelligent AI assistant and a multi-disciplinary expert.
+    
+    **The Task:** A user has uploaded a file and asked a question. Use the file content as the primary source of truth, but enrich your answer with your own expertise.
 
     **User's Question:**
     {question}
@@ -258,12 +251,11 @@ def file_analysis_tool(question: str, file_content_as_text: str, google_api_key:
     return streaming_llm.stream([HumanMessage(content=prompt)])
 
 # ===================================================================
-# TOOL 4: WEB SEARCH & REAL-TIME DATA ANALYSIS (Unchanged)
+# TOOL 4: WEB SEARCH & REAL-TIME DATA ANALYSIS
 # ===================================================================
 def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str:
     """
-    Use this tool to get real-time information, answer questions about current events,
-    or for any query that requires up-to-date knowledge from the internet.
+    Uses Tavily for web search and Gemini for synthesizing the answer.
     """
     print("---TOOL: Executing Web Search and Analysis---")
     try:
@@ -274,10 +266,8 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
         
         analyzer_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
         analysis_prompt = f"""
-        You are an expert research analyst. You have been given a user's query and the results from a web search.
-        Your task is to provide a clear, concise, and comprehensive answer to the user's query based *only* on the provided search results.
-        Cite your sources using the information available in the search results if possible.
-
+        You are an expert research analyst. Answer the query based ONLY on the search results provided.
+        
         ### User Query:
         {query}
 
@@ -295,22 +285,24 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
         return f"⚠️ Web search failed: {e}"
     
 # ===================================================================
-# THE AGENT: A "WORKSHOP MANAGER" THAT CHOOSES THE RIGHT TOOL
+# THE AGENT: ROUTER, STATE, AND GRAPH
 # ===================================================================
 
 class AgentState(TypedDict):
     query: str
-    route: str  # Add this key to store the router's decision
-    history: list[BaseMessage]
+    history: List[BaseMessage] # Stores conversation history
+    route: str
     final_response: Optional[any]
 
-# --- MODIFIED: Wrapper function now needs the mistral_api_key ---
+# --- NODE WRAPPERS ---
+
 def call_comparison_tool(state: AgentState, google_api_key: str, groq_api_key: str, mistral_api_key: str):
     response = comparison_and_evaluation_tool(
         state['query'], 
+        state.get('history', []), # Pass the history from state
         google_api_key, 
         groq_api_key,
-        mistral_api_key  # Pass the key through
+        mistral_api_key
     )
     return {"final_response": response}
 
@@ -322,21 +314,32 @@ def call_web_search_tool(state: AgentState, tavily_api_key: str, google_api_key:
     response = web_search_tool(state['query'], tavily_api_key, google_api_key)
     return {"final_response": response}
 
-# --- Router is UNCHANGED (still routes to 'comparison_tool') ---
+# --- ROUTER LOGIC ---
+
 def router(state: AgentState, google_api_key: str):
-    """The brain of the agent. Decides which tool to use and updates the 'route' state key."""
+    """
+    Decides which tool to use. Now considers history to understand follow-up intents.
+    """
     print("---AGENT: Routing query---")
     router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
     query = state['query']
+    history = state.get('history', [])
+    context_str = format_history(history)
     
     router_prompt = f"""
-    You are a master routing agent. Determine the user's primary intent and select the appropriate tool. You have three choices:
-    1.  `comparison_tool`: Use for complex questions, coding problems, analysis, or any text-based query needing a detailed, evaluated answer.
-    2.  `image_generation_tool`: Use ONLY if the user explicitly asks to create, draw, or generate an image.
-    3.  `web_search_tool`: Use this for any query that requires real-time, up-to-date information. This includes questions about current events, news, weather, recent scientific discoveries, or topics created after 2023.
+    You are a master routing agent. Determine the user's primary intent.
+    
+    Context (Previous Conversation):
+    {context_str}
+    
+    Current User Query: "{query}"
 
-    User Query: "{query}"
-    Return ONLY the tool name (`comparison_tool`, `image_generation_tool`, or `web_search_tool`).
+    Choices:
+    1. `comparison_tool`: Use for complex questions, coding, analysis, general chat, OR ANY follow-up requests (e.g., "rewrite that", "make it shorter", "fix the bug").
+    2. `image_generation_tool`: Use ONLY if the user explicitly asks to create, draw, or generate an image.
+    3. `web_search_tool`: Use for real-time information, news, weather, or current events.
+
+    Return ONLY the tool name.
     """
     response = router_llm.invoke(router_prompt).content.strip()
     
@@ -350,33 +353,36 @@ def router(state: AgentState, google_api_key: str):
         print("---AGENT: Decision -> Comparison & Evaluation Tool---")
         return {"route": "comparison_chat"}
 
-# --- MODIFIED: Define the Agentic Graph, adding the mistral_api_key ---
+# --- BUILD AGENT ---
+
 def build_agent(google_api_key: str, groq_api_key: str, pollinations_token: str, tavily_api_key: str, mistral_api_key: str):
     """
-    Builds the agent graph.
-    Requires an additional 'mistral_api_key' for the judge.
+    Builds the LangGraph state machine.
     """
     workflow = StateGraph(AgentState)
 
+    # Bind API keys to functions using partial
     router_with_keys = partial(router, google_api_key=google_api_key)
     
-    # Update the partial function for the comparison node to include the new key
     comparison_node = partial(
         call_comparison_tool, 
         google_api_key=google_api_key, 
         groq_api_key=groq_api_key,
-        mistral_api_key=mistral_api_key # Pass key to the node
+        mistral_api_key=mistral_api_key
     )
     image_node = partial(call_image_tool, google_api_key=google_api_key, pollinations_token=pollinations_token)
     web_search_node = partial(call_web_search_tool, tavily_api_key=tavily_api_key, google_api_key=google_api_key)
 
+    # Add nodes
     workflow.add_node("router", router_with_keys)
     workflow.add_node("comparison_chat", comparison_node)
     workflow.add_node("image_generator", image_node)
     workflow.add_node("web_search", web_search_node)
 
+    # Set entry point
     workflow.set_entry_point("router")
     
+    # Add edges
     workflow.add_conditional_edges(
         "router",
         lambda state: state["route"],
@@ -387,4 +393,4 @@ def build_agent(google_api_key: str, groq_api_key: str, pollinations_token: str,
     workflow.add_edge("image_generator", END)
     workflow.add_edge("web_search", END)
     
-    return workflow.compile() 
+    return workflow.compile()
