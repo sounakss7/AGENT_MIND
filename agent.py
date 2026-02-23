@@ -195,7 +195,7 @@ Transform this into a 'Top Class' masterpiece description (Subject, Style, Light
         
         # 2. Encode and Request
         encoded_prompt = quote_plus(final_prompt)
-        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=nanobanana-pro"
+        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=gptimage"
         
         headers = {
             "Authorization": f"Bearer {pollinations_token}"
