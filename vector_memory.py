@@ -11,8 +11,8 @@ Credentials are read from Streamlit secrets:
 
 import os
 import uuid
-from typing import List
-from datetime import datetime
+from typing import List, Dict, Any
+from datetime import datetime, timezone
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -23,6 +23,7 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
     PayloadSchemaType,
+    ScrollRequest,
 )
 from sentence_transformers import SentenceTransformer
 
@@ -87,7 +88,6 @@ def _ensure_collection(client: QdrantClient) -> None:
         print(f"[VectorMemory] Collection '{COLLECTION_NAME}' already exists.")
 
     # IMPORTANT: Qdrant Cloud requires a payload index on any field used for filtering.
-    # Without this, filtered count/search/delete all return 400 errors.
     try:
         client.create_payload_index(
             collection_name=COLLECTION_NAME,
@@ -96,7 +96,6 @@ def _ensure_collection(client: QdrantClient) -> None:
         )
         print("[VectorMemory] Payload index on 'session_id' created.")
     except Exception as e:
-        # Already exists — safe to ignore
         print(f"[VectorMemory] Payload index already exists or note: {e}")
 
 
@@ -203,3 +202,44 @@ def get_memory_count(session_id: str = "default") -> int:
     except Exception as e:
         print(f"[VectorMemory] Warning — could not get count: {e}")
         return 0
+
+
+def get_all_memories(session_id: str = "default") -> List[Dict[str, Any]]:
+    """
+    Fetch ALL stored messages for a session from Qdrant, sorted by timestamp ascending.
+    Returns a list of payload dicts: {role, content, session_id, timestamp}
+    Uses scroll (not search) so no query vector needed — fetches everything.
+    """
+    try:
+        client  = _get_client()
+        results = []
+        offset  = None
+
+        session_filter = Filter(
+            must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
+        )
+
+        while True:
+            response, next_offset = client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=session_filter,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in response:
+                results.append(point.payload)
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        # Sort by timestamp ascending
+        results.sort(key=lambda x: x.get("timestamp", ""))
+        print(f"[VectorMemory] Fetched {len(results)} total messages for session '{session_id}'.")
+        return results
+
+    except Exception as e:
+        print(f"[VectorMemory] Warning — could not fetch all memories: {e}")
+        return []
