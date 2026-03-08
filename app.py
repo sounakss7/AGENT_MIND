@@ -23,52 +23,60 @@ from langchain.schema import HumanMessage, AIMessage
 # --- Import the Agent Logic ---
 from agent import build_agent, file_analysis_tool
 
-# --- Vector Memory  (NEW) ---
-from vector_memory import save_memory, clear_memory
+# --- Vector Memory ---
+from vector_memory import save_memory, clear_memory, get_memory_count
 
 # =================================================================================
-# SESSION ID — PERSISTENT VIA BROWSER localStorage
-# On first visit: generate UUID, save to localStorage.
-# On every future visit: read same UUID from localStorage.
-# This means the same browser always gets the same memory bucket in Qdrant.
+# PAGE SETUP  (must come before any st.* calls)
+# =================================================================================
+st.set_page_config(page_title="🤖 Neuroplexa AI", page_icon="🧠", layout="wide")
+
+# =================================================================================
+# SESSION ID — CROSS-DEVICE PERSISTENT
+# Priority order:
+#   1. User typed a name in the sidebar  → use that (works on ALL devices)
+#   2. localStorage UUID in query params → use that (works on same browser)
+#   3. Fallback                          → "default_user"
 # =================================================================================
 
-# Inject JS to read/write a persistent user_id from localStorage
-persistent_id_component = components.html(
+# Step A — inject JS to read/write localStorage and push uid into URL
+components.html(
     """
     <script>
-        // Get or create a permanent user ID in localStorage
         let userId = localStorage.getItem("neuroplexa_user_id");
         if (!userId) {
             userId = "user_" + Math.random().toString(36).substr(2, 12);
             localStorage.setItem("neuroplexa_user_id", userId);
         }
-        // Send it to Streamlit via query param trick
         const url = new URL(window.parent.location.href);
         if (url.searchParams.get("uid") !== userId) {
             url.searchParams.set("uid", userId);
-            window.parent.history.replaceState({}, "", url);
+            window.parent.location.href = url.toString();  // full reload so Streamlit sees uid
         }
     </script>
     """,
     height=0,
 )
 
-# Read the uid from query params (set by JS above)
+# Step B — read uid from URL query params
 query_params = st.query_params
-raw_uid = query_params.get("uid", "default_user")
+auto_uid = query_params.get("uid", "")
 
-# Store stably in session_state so it doesn't flicker between reruns
+# Step C — initialise session_state with auto uid (only on very first run)
 if "session_id" not in st.session_state:
-    st.session_state.session_id = raw_uid
-elif raw_uid != "default_user" and st.session_state.session_id == "default_user":
-    st.session_state.session_id = raw_uid
+    st.session_state.session_id = auto_uid if auto_uid else "default_user"
+elif auto_uid and auto_uid != "default_user" and st.session_state.session_id == "default_user":
+    st.session_state.session_id = auto_uid
+
+# Step D — if user has manually set a name, that overrides everything
+if "manual_name_set" not in st.session_state:
+    st.session_state.manual_name_set = False
 
 SESSION_ID = st.session_state.session_id
 
 
 # =================================================================================
-# HELPER FUNCTIONS  (unchanged)
+# HELPER FUNCTIONS
 # =================================================================================
 
 def generate_audio_from_text(text: str) -> bytes | None:
@@ -147,19 +155,17 @@ def set_animated_fluid_background():
         unsafe_allow_html=True,
     )
 
-
-# =================================================================================
-# PAGE SETUP
-# =================================================================================
-st.set_page_config(page_title="🤖 Neuroplexa AI", page_icon="🧠", layout="wide")
 set_animated_fluid_background()
 
+# =================================================================================
+# LOAD SECRETS
+# =================================================================================
 try:
-    google_api_key    = st.secrets["GOOGLE_API_KEY"]
-    pollinations_token= st.secrets["POLLINATIONS_TOKEN"]
-    groq_api_key      = st.secrets["GROQ_API_KEY"]
-    mistral_api_key   = st.secrets["MISTRAL_API_KEY"]
-    tavily_api_key    = st.secrets["TAVILY_API_KEY"]
+    google_api_key     = st.secrets["GOOGLE_API_KEY"]
+    pollinations_token = st.secrets["POLLINATIONS_TOKEN"]
+    groq_api_key       = st.secrets["GROQ_API_KEY"]
+    mistral_api_key    = st.secrets["MISTRAL_API_KEY"]
+    tavily_api_key     = st.secrets["TAVILY_API_KEY"]
 except KeyError as e:
     st.error(f"❌ Missing Secret: {e}. Please add it to your Streamlit Secrets.")
     st.stop()
@@ -190,12 +196,44 @@ with st.sidebar:
     st.title("🧠 Neuroplexa AI")
     st.write("Multi-Model Agent with Long-Term Memory")
 
-    # --- Live memory counter ---
-    from vector_memory import get_memory_count
+    # ── Cross-device identity ─────────────────────────────────────
+    st.markdown("### 👤 Your Memory Identity")
+    st.caption("Same name = same memories on ANY device or browser.")
+
+    name_input = st.text_input(
+        "Enter your name:",
+        placeholder="e.g. sounak",
+        value="" if not st.session_state.manual_name_set else st.session_state.session_id,
+        key="name_input_field",
+    )
+
+    col_set, col_clear_name = st.columns(2)
+    with col_set:
+        if st.button("✅ Set Name", use_container_width=True):
+            if name_input.strip():
+                clean = name_input.strip().lower().replace(" ", "_")
+                st.session_state.session_id  = clean
+                st.session_state.manual_name_set = True
+                SESSION_ID = clean
+                st.success(f"Memory ID: `{clean}`")
+                st.rerun()
+            else:
+                st.warning("Please enter a name first.")
+    with col_clear_name:
+        if st.button("🔄 Reset ID", use_container_width=True):
+            st.session_state.manual_name_set = False
+            st.session_state.session_id = auto_uid if auto_uid else "default_user"
+            SESSION_ID = st.session_state.session_id
+            st.rerun()
+
+    # ── Live memory counter ───────────────────────────────────────
     mem_count = get_memory_count(SESSION_ID)
     st.metric("🧠 Memories stored", mem_count)
-    st.caption(f"🔑 Memory ID: `{SESSION_ID[:16]}…`")
+    st.caption(f"🔑 Memory ID: `{SESSION_ID[:20]}{'…' if len(SESSION_ID) > 20 else ''}`")
 
+    st.markdown("---")
+
+    # ── Google Search ─────────────────────────────────────────────
     st.header("🔍 Google Search")
     search_query = st.text_input("Search the web directly...", key="google_search")
     if st.button("Search"):
@@ -206,17 +244,17 @@ with st.sidebar:
         else:
             st.warning("Please enter a search query.")
 
+    # ── File Analysis ─────────────────────────────────────────────
     st.header("📂 File Analysis")
     uploaded_file = st.file_uploader(
         "Upload a file to ask questions about it",
         type=["pdf", "txt", "py", "js", "html", "css"],
     )
 
+    # ── Utilities ─────────────────────────────────────────────────
     st.header("🧭 Utilities")
-    if st.button("Clear Chat History & Reset Metrics"):
-        # Also wipe this session's vector memory  (NEW)
+    if st.button("🗑️ Clear Chat History & Reset Metrics"):
         clear_memory(session_id=SESSION_ID)
-
         st.session_state.messages   = []
         st.session_state.trajectory = []
         st.session_state.metrics    = {
@@ -229,12 +267,14 @@ with st.sidebar:
 
     st.markdown("### 💡 AI Tip")
     st.info(random.choice([
-        "I now have long-term memory! Ask about something from a past session.",
-        "The Comparison tool uses Gemini & Llama 3 simultaneously.",
+        "Type your name above to access memories from any device!",
+        "The Comparison tool uses Gemini & Groq simultaneously.",
         "Use 'Draw' for images or 'Search' for live web results.",
         "Your memory persists across sessions — try 'What did we discuss before?'",
+        "Same name on phone + laptop = same AI memory everywhere.",
     ]))
 
+    # ── Live Stats ────────────────────────────────────────────────
     st.header("📊 Live Stats")
     metrics = st.session_state.metrics
     col1, col2 = st.columns(2)
@@ -258,7 +298,7 @@ with st.sidebar:
 
 
 # =================================================================================
-# CHAT DISPLAY LOGIC  (unchanged)
+# CHAT DISPLAY
 # =================================================================================
 st.title("🧠 Neuroplexa AI Workspace")
 
@@ -295,7 +335,7 @@ for i, message in enumerate(st.session_state.messages):
 
 
 # =================================================================================
-# AGENT DEBUGGER LOGIC  (unchanged)
+# AGENT DEBUGGER
 # =================================================================================
 async def run_agent_and_capture_trajectory(agent, inputs):
     trace_steps    = []
@@ -308,7 +348,7 @@ async def run_agent_and_capture_trajectory(agent, inputs):
         if kind == "on_chain_start":
             if event["name"] != "LangGraph":
                 current_step = {"name": event["name"], "input": event["data"].get("input"), "output": None}
-                if event["name"] == "comparison_chat":  tool_used = "Comparison"
+                if event["name"] == "comparison_chat":   tool_used = "Comparison"
                 elif event["name"] == "image_generator": tool_used = "Image Gen"
                 elif event["name"] == "web_search":      tool_used = "Web Search"
         if kind == "on_chain_end":
@@ -335,20 +375,22 @@ def pretty_print_dict(d):
 
 
 # =================================================================================
-# MAIN CHAT INPUT & EXECUTION LOGIC
+# MAIN CHAT INPUT
 # =================================================================================
 if prompt := st.chat_input("Ask a question, request an image, or upload a file..."):
-    st.session_state.messages.append({"role": "user", "text": prompt})
 
-    # Save user message to vector memory  (NEW)
+    # Always read the latest SESSION_ID (may have been updated by name input)
+    SESSION_ID = st.session_state.session_id
+
+    st.session_state.messages.append({"role": "user", "text": prompt})
     save_memory(role="user", content=prompt, session_id=SESSION_ID)
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            start_time   = time.time()
+            start_time    = time.time()
             tool_used_key = ""
 
-            # --- PATH 1: File Analysis ---
+            # ── PATH 1: File Analysis ──────────────────────────────
             if uploaded_file:
                 tool_used_key = "File Analysis"
                 file_bytes    = uploaded_file.read()
@@ -359,7 +401,7 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
                     for page in reader.pages:
                         file_text += page.extract_text() or ""
                     if not file_text.strip():
-                        st.info("No text layer found. Performing OCR (this may take a moment)...")
+                        st.info("No text layer found. Performing OCR...")
                         doc = fitz.open(stream=file_bytes, filetype="pdf")
                         for page in doc:
                             pix = page.get_pixmap()
@@ -370,13 +412,10 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
 
                 response_stream = file_analysis_tool(prompt, file_text, google_api_key)
                 full_response   = st.write_stream(response_stream)
-
-                # Save assistant response to vector memory  (NEW)
                 save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
-
                 st.session_state.messages.append({"role": "assistant", "text": full_response, "audio_bytes": None})
 
-            # --- PATH 2: Agent Execution ---
+            # ── PATH 2: Agent Execution ────────────────────────────
             else:
                 agent = build_agent(google_api_key, groq_api_key, pollinations_token,
                                     tavily_api_key, mistral_api_key)
@@ -391,7 +430,7 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
                 inputs = {
                     "query":      prompt,
                     "history":    chat_history,
-                    "session_id": SESSION_ID,   # <-- NEW: passed into AgentState
+                    "session_id": SESSION_ID,
                 }
 
                 final_response, trace_steps, tool_used_key = asyncio.run(
@@ -401,10 +440,7 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
 
                 if isinstance(final_response, str):
                     st.markdown(final_response)
-
-                    # Save assistant response to vector memory  (NEW)
                     save_memory(role="assistant", content=final_response, session_id=SESSION_ID)
-
                     st.session_state.messages.append({"role": "assistant", "text": final_response, "audio_bytes": None})
 
                 elif isinstance(final_response, dict) and "image" in final_response:
@@ -424,15 +460,15 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
                     st.markdown(f"**Error:** {error_msg}")
                     st.session_state.messages.append({"role": "assistant", "text": f"Error: {error_msg}", "audio_bytes": None})
 
-            # --- Metrics ---
-            end_time  = time.time()
-            latency   = end_time - start_time
-            metrics   = st.session_state.metrics
+            # ── Metrics ───────────────────────────────────────────
+            end_time = time.time()
+            latency  = end_time - start_time
+            metrics  = st.session_state.metrics
             metrics["total_requests"] += 1
             if tool_used_key and tool_used_key in metrics["tool_usage"]:
                 metrics["tool_usage"][tool_used_key] += 1
-            metrics["total_latency"]    += latency
-            metrics["average_latency"]   = metrics["total_latency"] / metrics["total_requests"]
+            metrics["total_latency"]     += latency
+            metrics["average_latency"]    = metrics["total_latency"] / metrics["total_requests"]
             metrics["last_query_details"] = {
                 "timestamp": datetime.now().isoformat(), "prompt": prompt,
                 "tool_used": tool_used_key, "latency_seconds": round(latency, 2),
@@ -441,7 +477,7 @@ if prompt := st.chat_input("Ask a question, request an image, or upload a file..
 
 
 # =================================================================================
-# FOOTER / DEBUG VIEW  (unchanged)
+# FOOTER / DEBUG VIEW
 # =================================================================================
 if st.session_state.trajectory:
     with st.expander("🕵️ Agent Trajectory (Debug View)", expanded=False):
