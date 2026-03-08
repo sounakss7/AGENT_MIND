@@ -31,14 +31,5 @@ langgraph==0.0.30
 gTTS
 datasets
 python-dotenv
-grpcio==1.59.3
-grpcio-tools==1.59.3
 qdrant-client==1.9.1
 sentence-transformers>=2.7.0
-```
-
----
-
-**Also check your Python version.** Your error shows `Python 3.13.12` — Streamlit Cloud defaulted to it. Add a `.python-version` file in your repo root:
-```
-3.11
