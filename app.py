@@ -15,7 +15,7 @@ import asyncio
 import json
 # Add to sidebar in app.py
 from vector_memory import get_memory_count
-st.sidebar.metric("🧠 Memories stored", get_memory_count(SESSION_ID))
+st.sidebar.metric("🧠 Memories stored", get_memory_count(session_id))
 # --- TTS Library ---
 from gtts import gTTS
 
