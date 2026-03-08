@@ -33,3 +33,6 @@ datasets
 python-dotenv
 qdrant-client>=1.9.0
 sentence-transformers>=2.7.0
+qdrant-client[rest]==1.9.1
+sentence-transformers>=2.7.0
+grpcio-tools==1.59.3
