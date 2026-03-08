@@ -4,7 +4,7 @@ vector_memory.py
 Long-term semantic memory for AGENT_MIND using Qdrant Cloud +
 sentence-transformers/all-MiniLM-L6-v2 embeddings.
 
-Credentials are read from environment variables / Streamlit secrets:
+Credentials are read from Streamlit secrets:
   QDRANT_URL     — your Qdrant Cloud cluster URL
   QDRANT_API_KEY — your Qdrant Cloud API key
 """
@@ -22,17 +22,18 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    PayloadSchemaType,
 )
 from sentence_transformers import SentenceTransformer
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-COLLECTION_NAME  = "agent_mind_memory"
-EMBEDDING_MODEL  = "sentence-transformers/all-MiniLM-L6-v2"
-VECTOR_DIM       = 384
-TOP_K            = 5
-SCORE_THRESHOLD  = 0.35
+COLLECTION_NAME = "agent_mind_memory"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+VECTOR_DIM      = 384
+TOP_K           = 5
+SCORE_THRESHOLD = 0.35
 
 # ---------------------------------------------------------------------------
 # SINGLETON HELPERS
@@ -73,7 +74,9 @@ def _get_client() -> QdrantClient:
 
 
 def _ensure_collection(client: QdrantClient) -> None:
+    """Create collection and payload index if they don't exist."""
     existing = [c.name for c in client.get_collections().collections]
+
     if COLLECTION_NAME not in existing:
         client.create_collection(
             collection_name=COLLECTION_NAME,
@@ -83,16 +86,31 @@ def _ensure_collection(client: QdrantClient) -> None:
     else:
         print(f"[VectorMemory] Collection '{COLLECTION_NAME}' already exists.")
 
+    # IMPORTANT: Qdrant Cloud requires a payload index on any field used for filtering.
+    # Without this, filtered count/search/delete all return 400 errors.
+    try:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="session_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        print("[VectorMemory] Payload index on 'session_id' created.")
+    except Exception as e:
+        # Already exists — safe to ignore
+        print(f"[VectorMemory] Payload index already exists or note: {e}")
+
 
 # ---------------------------------------------------------------------------
 # PUBLIC API
 # ---------------------------------------------------------------------------
 
 def embed(text: str) -> List[float]:
+    """Return a 384-dim embedding vector for the given text."""
     return _get_embedder().encode(text, normalize_embeddings=True).tolist()
 
 
 def save_memory(role: str, content: str, session_id: str = "default") -> None:
+    """Persist a single conversation turn to Qdrant Cloud."""
     if not content or not content.strip():
         return
     try:
@@ -125,6 +143,7 @@ def retrieve_relevant_memory(
     top_k: int = TOP_K,
     score_threshold: float = SCORE_THRESHOLD,
 ) -> str:
+    """Search Qdrant Cloud for semantically relevant past messages."""
     try:
         client    = _get_client()
         query_vec = embed(query)
@@ -155,6 +174,7 @@ def retrieve_relevant_memory(
 
 
 def clear_memory(session_id: str = "default") -> None:
+    """Delete all memory entries for a given session."""
     try:
         client = _get_client()
         client.delete(
@@ -169,6 +189,7 @@ def clear_memory(session_id: str = "default") -> None:
 
 
 def get_memory_count(session_id: str = "default") -> int:
+    """Returns number of memories stored for a session."""
     try:
         client = _get_client()
         count_result = client.count(
