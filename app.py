@@ -13,9 +13,7 @@ import random
 from urllib.parse import quote_plus
 import asyncio
 import json
-# Add to sidebar in app.py
-from vector_memory import get_memory_count
-st.sidebar.metric("🧠 Memories stored", get_memory_count("session_id"))
+
 # --- TTS Library ---
 from gtts import gTTS
 
@@ -29,13 +27,42 @@ from agent import build_agent, file_analysis_tool
 from vector_memory import save_memory, clear_memory
 
 # =================================================================================
-# SESSION ID  (NEW)
-# A stable ID per browser session — used to namespace Qdrant memories so
-# different users on Streamlit Cloud don't see each other's history.
+# SESSION ID — PERSISTENT VIA BROWSER localStorage
+# On first visit: generate UUID, save to localStorage.
+# On every future visit: read same UUID from localStorage.
+# This means the same browser always gets the same memory bucket in Qdrant.
 # =================================================================================
+
+# Inject JS to read/write a persistent user_id from localStorage
+persistent_id_component = components.html(
+    """
+    <script>
+        // Get or create a permanent user ID in localStorage
+        let userId = localStorage.getItem("neuroplexa_user_id");
+        if (!userId) {
+            userId = "user_" + Math.random().toString(36).substr(2, 12);
+            localStorage.setItem("neuroplexa_user_id", userId);
+        }
+        // Send it to Streamlit via query param trick
+        const url = new URL(window.parent.location.href);
+        if (url.searchParams.get("uid") !== userId) {
+            url.searchParams.set("uid", userId);
+            window.parent.history.replaceState({}, "", url);
+        }
+    </script>
+    """,
+    height=0,
+)
+
+# Read the uid from query params (set by JS above)
+query_params = st.query_params
+raw_uid = query_params.get("uid", "default_user")
+
+# Store stably in session_state so it doesn't flicker between reruns
 if "session_id" not in st.session_state:
-    import uuid
-    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.session_id = raw_uid
+elif raw_uid != "default_user" and st.session_state.session_id == "default_user":
+    st.session_state.session_id = raw_uid
 
 SESSION_ID = st.session_state.session_id
 
@@ -163,8 +190,11 @@ with st.sidebar:
     st.title("🧠 Neuroplexa AI")
     st.write("Multi-Model Agent with Long-Term Memory")
 
-    # NEW: show session ID badge
-    st.caption(f"🔑 Session: `{SESSION_ID[:8]}…`")
+    # --- Live memory counter ---
+    from vector_memory import get_memory_count
+    mem_count = get_memory_count(SESSION_ID)
+    st.metric("🧠 Memories stored", mem_count)
+    st.caption(f"🔑 Memory ID: `{SESSION_ID[:16]}…`")
 
     st.header("🔍 Google Search")
     search_query = st.text_input("Search the web directly...", key="google_search")
