@@ -7,6 +7,11 @@ sentence-transformers/all-MiniLM-L6-v2 embeddings.
 Credentials are read from Streamlit secrets:
   QDRANT_URL     — your Qdrant Cloud cluster URL
   QDRANT_API_KEY — your Qdrant Cloud API key
+
+SECURITY UPDATE:
+  • save_memory() now runs content through MemoryGuard before storing.
+  • PII (emails, phone numbers, Aadhaar, API keys, etc.) is auto-redacted.
+  • A 'pii_redacted' flag is stored in payload for audit purposes.
 """
 
 import os
@@ -109,12 +114,30 @@ def embed(text: str) -> List[float]:
 
 
 def save_memory(role: str, content: str, session_id: str = "default") -> None:
-    """Persist a single conversation turn to Qdrant Cloud."""
+    """
+    Persist a single conversation turn to Qdrant Cloud.
+    ── SECURITY: content is passed through MemoryGuard before storing.
+    PII is redacted and a flag is stored in the payload.
+    """
     if not content or not content.strip():
         return
     try:
+        # ── Security: sanitise before saving ──────────────────────
+        from security_guard import memory_guard, audit_logger
+        guard_result = memory_guard.validate(content)
+        safe_content = guard_result.clean_text
+
+        if guard_result.event_type == "MEMORY_REDACTED":
+            audit_logger.log(
+                session_id  = session_id,
+                event_type  = "MEMORY_REDACTED",
+                detail      = f"PII redacted before saving. Types: {guard_result.findings}",
+                findings    = guard_result.findings,
+            )
+            print(f"[VectorMemory] PII redacted before saving: {guard_result.findings}")
+
         client   = _get_client()
-        vector   = embed(content)
+        vector   = embed(safe_content)
         point_id = str(uuid.uuid4())
         client.upsert(
             collection_name=COLLECTION_NAME,
@@ -123,10 +146,11 @@ def save_memory(role: str, content: str, session_id: str = "default") -> None:
                     id=point_id,
                     vector=vector,
                     payload={
-                        "role":       role,
-                        "content":    content,
-                        "session_id": session_id,
-                        "timestamp":  datetime.utcnow().isoformat(),
+                        "role":         role,
+                        "content":      safe_content,
+                        "session_id":   session_id,
+                        "timestamp":    datetime.utcnow().isoformat(),
+                        "pii_redacted": guard_result.event_type == "MEMORY_REDACTED",
                     },
                 )
             ],

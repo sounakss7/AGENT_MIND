@@ -16,7 +16,12 @@ import logging
 # =======================================================================================
 # VECTOR MEMORY IMPORT
 # =======================================================================================
-from vector_memory import retrieve_relevant_memory   # <-- NEW
+from vector_memory import retrieve_relevant_memory
+
+# =======================================================================================
+# SECURITY LAYER IMPORT
+# =======================================================================================
+from security_guard import input_guard, output_guard, audit_logger
 
 # =======================================================================================
 # HELPER FUNCTIONS
@@ -76,7 +81,7 @@ def query_mistral_judge(prompt: str, mistral_api_key: str):
 
 
 # =======================================================================================
-# TOOL 1: COMPARISON & EVALUATION  (now memory-aware)
+# TOOL 1: COMPARISON & EVALUATION  (memory-aware + output guarded)
 # =======================================================================================
 
 def comparison_and_evaluation_tool(
@@ -85,15 +90,12 @@ def comparison_and_evaluation_tool(
     google_api_key: str,
     groq_api_key: str,
     mistral_api_key: str,
-    session_id: str = "default",          # <-- NEW
+    session_id: str = "default",
 ) -> str:
     print("---TOOL: Executing Comparison (Judged by Mistral with Memory)---")
 
-    # 1. Short-term context (last 4 turns from in-session history)
     short_term_ctx = format_history(history)
-
-    # 2. Long-term semantic context from Qdrant  <-- NEW
-    long_term_ctx = retrieve_relevant_memory(query, session_id=session_id)
+    long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id)
     if long_term_ctx:
         print(f"[VectorMemory] Retrieved {long_term_ctx.count(chr(10))} memory hits for comparison tool.")
 
@@ -118,12 +120,11 @@ Use the long-term memory only when the user refers to something discussed in a p
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_gemini = executor.submit(lambda: fast_llm.invoke(full_prompt_with_context).content)
         future_groq   = executor.submit(query_groq, full_prompt_with_context, groq_api_key)
-
         gemini_response = future_gemini.result()
         groq_result     = future_groq.result()
 
-    groq_response    = ""
-    groq_model_name  = "Groq (Error)"
+    groq_response   = ""
+    groq_model_name = "Groq (Error)"
 
     if isinstance(groq_result, dict):
         groq_response   = groq_result["content"]
@@ -170,6 +171,17 @@ Instructions:
     else:
         chosen_answer, chosen_model_name = gemini_response, gemini_model_name
         loser_response, loser_model_name, loser_name = groq_response, groq_model_name, "Groq"
+
+    # ── OUTPUT GUARD: sanitise before returning ────────────────
+    chosen_result  = output_guard.validate(chosen_answer)
+    chosen_answer  = chosen_result.clean_text
+    if chosen_result.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
+        audit_logger.log(
+            session_id = session_id,
+            event_type = chosen_result.event_type,
+            detail     = chosen_result.reason,
+            findings   = chosen_result.findings,
+        )
 
     final_output  = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
@@ -265,7 +277,11 @@ You are an expert research analyst. Answer the query based ONLY on the search re
 
 Your Answer:
 """
-        return analyzer_llm.invoke(analysis_prompt).content
+        result = analyzer_llm.invoke(analysis_prompt).content
+
+        # ── OUTPUT GUARD on web search result ─────────────────
+        guard_result = output_guard.validate(result)
+        return guard_result.clean_text
 
     except Exception as e:
         return f"⚠️ Web search failed: {e}"
@@ -280,7 +296,7 @@ class AgentState(TypedDict):
     history:        List[BaseMessage]
     route:          str
     final_response: Optional[any]
-    session_id:     str                    # <-- NEW
+    session_id:     str
 
 
 # --- NODE WRAPPERS ---
@@ -292,7 +308,7 @@ def call_comparison_tool(state: AgentState, google_api_key: str, groq_api_key: s
         google_api_key,
         groq_api_key,
         mistral_api_key,
-        session_id=state.get("session_id", "default"),   # <-- NEW
+        session_id=state.get("session_id", "default"),
     )
     return {"final_response": response}
 
@@ -315,9 +331,7 @@ def router(state: AgentState, google_api_key: str):
     session_id = state.get("session_id", "default")
 
     short_term_ctx = format_history(history)
-
-    # Pull semantic memory to help routing too  <-- NEW
-    long_term_ctx = retrieve_relevant_memory(query, session_id=session_id, top_k=3)
+    long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id, top_k=3)
 
     router_prompt = f"""
 You are a master routing agent. Determine the user's primary intent.
