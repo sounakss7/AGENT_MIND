@@ -1,34 +1,39 @@
-# 🧠 AI Agent Workshop
+# 🧠 AGENT_MIND
 
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![Framework](https://img.shields.io/badge/Framework-Streamlit-red.svg)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://mutimodal.streamlit.app/)
-# ✨ Try the Live Demo
-**[AGENTIC_MIND 🧠](https://mutimodal.streamlit.app/)**
+
+**Built by Sounak**
+
+An advanced, production-ready multi-tool AI agent built with **Streamlit** and **LangGraph**. This application serves as a robust agentic framework that can search the web, generate images, perform comparative analysis between LLMs (with MoA judging), and analyze user-uploaded files, all backed by a high-security execution layer and long-term vector memory.
+
 ---
-An advanced multi-tool AI agent built with Streamlit and LangGraph. This interactive web application serves as a workshop to demonstrate and test the capabilities of a modern AI agent that can search the web, generate images, perform comparative analysis between models, and analyze user-uploaded files.
 
 ## ✨ Features
 
--   **🤖 Agentic Router:** A central LangGraph agent that intelligently routes user queries to the most appropriate tool.
--   **Interactive Debugging:** Integrated AGDebugger to provide a visual, interactive dashboard for monitoring, stepping through, and debugging the LangGraph agent's workflow and internal decisions.
--   * **🎧 On-Demand Audio (TTS):** Converts the agent's text responses into speech. Users can click a "Listen" button to generate and play the audio, powered by `gTTS`.
--   **🌐 Real-Time Web Search:** Utilizes the Tavily API to fetch current information from the internet and provides summarized, relevant answers.
--   **🎨 AI Image Generation:** Integrates with the Pollinations AI API to generate images from user prompts, first enhancing the prompts with Gemini for more artistic results.
--   **⚖️ Dual-Model Comparison & Evaluation:** A unique tool that runs the same query on both **Google's Gemini 2.5 Flash** and a model via the **Groq API** (Llama 3.1 or GPT-OSS). A "Judge" LLM then evaluates both responses to determine the winner.
+-   **🤖 Agentic Router:** A central LangGraph agent that intelligently routes user queries to the most appropriate tool using both short-term conversational context and long-term semantic memory.
+-   **⚖️ Dual-Model Comparison & Evaluation (MoA):** Runs the same query concurrently on both **Google's Gemini 2.5 Flash** and a model via **Groq** (GPT-OSS or Llama-3.1). A "Judge" LLM (**Mistral**) evaluating both responses autonomously to declare a winner.
+-   **🛡️ Comprehensive Security Guard:** Features a built-in security layer (`security_guard.py`) that includes:
+    - **Input Guard:** Blocks prompt injections, jailbreaks, and Gibberish.
+    - **Output & Memory Guard:** Auto-redacts PII (Emails, Phone numbers, Keys, Aadhaar, PAN) using sophisticated pattern matching before displaying outputs or saving to memory.
+    - **Audit Logger:** Writes all security actions/blocks to a Qdrant audit collection.
+-   **🧠 Long-Term Vector Memory:** Powered by **Qdrant Cloud** and **SentenceTransformers**. Retains context across sessions securely, meaning the agent remembers past interactions using semantic search.
+-   **🌐 Real-Time Web Search:** Utilizes the **Tavily API** to fetch up-to-date real-time intelligence off the internet.
+-   **🎨 AI Image Generation:** Integrates with the **Pollinations AI** framework to generate high-quality images based on dynamically enhanced (Gemini) user prompts.
 -   **📂 Advanced File Analysis:**
-    -   Supports various file types (`.pdf`, `.txt`, `.py`, `.js`, etc.).
-    -   Features an **OCR fallback** for PDFs without a text layer.
-    -   Uses a powerful Gemini model with an "Expert Persona" to provide in-depth analysis, code reviews, or document summaries.
--   **📊 Live Performance Dashboard:** The sidebar provides real-time metrics on agent performance, including total requests, average latency, tool usage distribution, and user feedback accuracy.
+    - Supports deep-dive analysis on `.pdf`, `.txt`, `.py`, `.js`, etc., acting as an Expert Persona.
+-   **🎧 On-Demand Audio (TTS):** Converts agent text responses into speech playback using `gTTS`.
 
 ## ⚙️ Architecture & Workflow
 
-The application operates on two primary workflows, determined by whether a file is uploaded.
-
-1.  **File Analysis Path:** A direct, non-agentic path where uploaded file content is processed and sent directly to the `file_analysis_tool`.
-2.  **Core Agent Path:** When no file is present, the query is handled by the LangGraph agent, which routes it to the appropriate tool (Web Search, Image Gen, or Comparison).
+The architecture is built upon a LangGraph state machine bridging core capabilities. 
+When a query enters the system:
+1. Passes through the **InputGuard** to drop malicious scripts or jailbreaks.
+2. Short-term and Long-term context are retrieved from memory.
+3. The **Router** LLM selects an optimal tool (`File Analysis`, `Web Search`, `Image Gen`, or `Comparison Chat`).
+4. Outputs are passed through the **OutputGuard** to redact PII and toxic content.
+5. Clean data is sent back to the User and embedded into **Qdrant Vector Memory**.
 
 ![Agent Workflow Diagram](workflow_architecture.png)
 
@@ -36,13 +41,14 @@ The application operates on two primary workflows, determined by whether a file 
 
 -   **Frontend:** [Streamlit](https://streamlit.io/)
 -   **AI Orchestration:** [LangChain](https://www.langchain.com/) & [LangGraph](https://langchain-ai.github.io/langgraph/)
--   **Language:** Python
--   **Core Libraries:** Pandas, Pillow, PyPDF2, PyMuPDF (fitz), Pytesseract ,**gTTS**
--   **APIs & Services:**
-    -   **LLMs:** Google Gemini, Groq API (Llama, OpenAI models), Mistral AI
-    -   **Web Search:** Tavily AI
-    -   **Image Generation:** Pollinations AI
-    -   **Traces & Analytics:** LangSmith
+-   **Vector Database:** [Qdrant Cloud](https://qdrant.tech/)
+-   **Embeddings:** `sentence-transformers/all-MiniLM-L6-v2`
+-   **LLMs / APIs:** 
+    - Google Gemini
+    - Groq API (GPT-OSS, Llama 3)
+    - Mistral AI 
+    - Tavily Search API
+    - Pollinations AI
 
 ## 🚀 Getting Started
 
@@ -50,96 +56,69 @@ Follow these instructions to set up and run the project locally.
 
 ### 1. Prerequisites
 
--   Python 3.9 or higher
+-   Python 3.9+
 -   Git
--   **Tesseract OCR Engine:** This is a system-level dependency required for the file analysis tool's OCR fallback.
-    -   Follow the official installation guide for your operating system: [Tesseract at UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
-    -   Make sure to add the Tesseract executable to your system's PATH.
 
 ### 2. Clone the Repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd <YOUR_PROJECT_DIRECTORY>
+git clone https://github.com/sounakss7/AGENT_MIND.git
+cd AGENT_MIND
 ```
-
 
 ### 3. Set Up a Virtual Environment
 
 It's highly recommended to use a virtual environment to manage dependencies.
 
 ```bash
-# For macOS/Linux
-python3 -m venv venv
-source venv/bin/activate
-
 # For Windows
 python -m venv venv
 .\venv\Scripts\activate
+
+# For macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
 ```
+
 ### 4. Install Dependencies
 
-Create a `requirements.txt` file in your project root with the following content:
+Install the necessary pip packages. 
 
-```text
-PyPDF2
-streamlit
-python-dotenv
-langchain
-langsmith
-langchain-google-genai
-google-generativeai
-fal-client
-openai
-langchain-openai
-pillow
-python-dotenv
-requests
-audio-recorder-streamlit
-PyPDF2
-pytesseract
-pdf2image
-Pillow
-pymupdf
-concurrent-log-handler
-feedparser
-langgraph
-tavily-python
-pandas
-# --- LangChain Ecosystem (COMPATIBLE SET) ---
-langchain==0.1.17
-langchain-core==0.1.52
-langchain-google-genai==0.0.11
-langchain-openai==0.1.7
-langgraph==0.0.30  
-gTTS pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 ```
-### 5. Configure API Keys
 
-The application uses Streamlit Secrets for managing API keys.
+### 5. Configure API Keys (Streamlit Secrets)
 
-1.  Create a folder named `.streamlit` in your project's root directory.
+The application uses Streamlit Secrets. Create the `.streamlit` directory and add your keys:
+
+1.  Create a folder named `.streamlit` in the root directory.
 2.  Inside this folder, create a file named `secrets.toml`.
-3.  Add your API keys to this file in the following format:
+3.  Add your API credentials as follows:
 
 ```toml
 # .streamlit/secrets.toml
 
-# Google Gemini API Key
-GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY_HERE"
+# LLM Providers
+GOOGLE_API_KEY = "YOUR_GOOGLE_KEY"
+GROQ_API_KEY = "YOUR_GROQ_KEY"
+MISTRAL_API_KEY = "YOUR_MISTRAL_KEY"
 
-# Groq API Key
-GROQ_API_KEY = "YOUR_GROQ_API_KEY_HERE"
+# Tools
+TAVILY_API_KEY = "YOUR_TAVILY_KEY"
+POLLINATIONS_TOKEN = "YOUR_POLLINATIONS_TOKEN" # Optional
 
-# Tavily Search API Key
-TAVILY_API_KEY = "YOUR_TAVILY_API_KEY_HERE"
-
-# Pollinations.ai Token (Optional, can be used without one)
-POLLINATIONS_TOKEN = "YOUR_POLLINATIONS_TOKEN_HERE"
+# Qdrant Vector Memory (Long-term Context & Auditing)
+QDRANT_URL = "YOUR_QDRANT_CLUSTER_URL"
+QDRANT_API_KEY = "YOUR_QDRANT_API_KEY"
 ```
+
 ## ▶️ How to Run the Application
 
-Once you have completed the setup, run the following command in your terminal from the project's root directory:
+Once your virtual environment is active and keys are set, run the app using Streamlit:
 
 ```bash
-streamlit run streamlit_app.py
+streamlit run app.py
+```
+
+The application will launch in your default web browser at `http://localhost:8501`.
