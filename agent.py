@@ -159,6 +159,58 @@ def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3,
     return f"Error: The Mistral judge failed to provide an evaluation ({last_error})."
 
 
+def format_judge_evaluation(judgment: str) -> str:
+    """
+    Extracts reasoning and formats evaluation from judge response (JSON or plain text).
+    - Unwraps JSON {"winner": ..., "reasoning": ...} to extract clean markdown text.
+    - Strips code fences (```json ... ```) if present.
+    - Unindents lines to prevent accidental <pre><code> block formatting in markdown.
+    - Converts LaTeX math delimiters \\( \\) -> $ and \\[ \\] -> $$ for Streamlit KaTeX rendering.
+    """
+    if not judgment or not isinstance(judgment, str):
+        return ""
+
+    reasoning = ""
+    try:
+        match = re.search(r"\{[\s\S]*?\}", judgment)
+        if match:
+            json_str = match.group(0)
+            data = None
+            try:
+                data = json.loads(json_str)
+            except Exception:
+                fixed_json = re.sub(r'(?<!\\)\n', r'\\n', json_str)
+                try:
+                    data = json.loads(fixed_json)
+                except Exception:
+                    pass
+            if data and isinstance(data, dict):
+                reasoning = data.get("reasoning", "")
+    except Exception:
+        pass
+
+    if not reasoning:
+        reason_match = re.search(r'"reasoning"\s*:\s*"([\s\S]*?)"\s*\}', judgment)
+        if reason_match:
+            reasoning = reason_match.group(1)
+        else:
+            reasoning = re.sub(r"^```(?:json)?\s*", "", judgment.strip(), flags=re.MULTILINE)
+            reasoning = re.sub(r"\s*```$", "", reasoning.strip(), flags=re.MULTILINE)
+
+    if not reasoning.strip():
+        reasoning = judgment
+
+    # Dedent / trim lines so leading spaces don't trigger markdown code blocks
+    lines = [line.strip() for line in reasoning.splitlines()]
+    reasoning_clean = "\n".join(lines).strip()
+
+    # Convert LaTeX delimiters \( \) -> $ and \[ \] -> $$ for Streamlit KaTeX math rendering
+    reasoning_clean = re.sub(r'\\\((.*?)\\\)', r'$\1$', reasoning_clean)
+    reasoning_clean = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', reasoning_clean, flags=re.DOTALL)
+
+    return reasoning_clean
+
+
 # =======================================================================================
 # TOOL 1: COMPARISON & EVALUATION  (memory-aware + output guarded)
 # =======================================================================================
@@ -323,8 +375,9 @@ Instructions:
             chosen_answer, chosen_model_name = resp_b, model_b
             loser_response, loser_model_name, loser_name = resp_a, model_a, label_a
 
-        # Clean judge evaluation
-        judge_res = output_guard.validate(judgment)
+        # Format and clean judge evaluation (extract reasoning from JSON, convert LaTeX to KaTeX, strip code block indentation)
+        formatted_judgment = format_judge_evaluation(judgment)
+        judge_res = output_guard.validate(formatted_judgment)
         judgment_clean = judge_res.clean_text if judge_res.passed else "[Judge evaluation omitted due to content policy]"
         if judge_res.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
             audit_logger.log(

@@ -289,3 +289,30 @@ def test_web_search_passes_title_and_urls():
         call_prompt = gemini_mock.invoke.call_args[0][0]
         assert "Source: [Python 3.12 Release Notes](https://docs.python.org/3.12/)" in call_prompt
         assert "Python 3.12 introduces improved performance." in call_prompt
+
+
+def test_format_judge_evaluation_json_and_latex():
+    """Verify format_judge_evaluation extracts reasoning from JSON, dedents, and formats KaTeX math."""
+    from agent import format_judge_evaluation
+
+    raw_json = '''{
+  "winner": "B",
+  "reasoning": "
+  **Correctness and Completeness:**
+  Both responses correctly derive the equation \\( y = mx + c \\) from constant slope.
+  **Winner:** B
+  "
+}'''
+
+    cleaned = format_judge_evaluation(raw_json)
+    # Must NOT have outer JSON braces or keys
+    assert '{"winner"' not in cleaned
+    assert '"reasoning"' not in cleaned
+    # Must unwrap and convert LaTeX math delimiters to KaTeX $
+    assert "$ y = mx + c $" in cleaned
+    assert "\\( y = mx + c \\)" not in cleaned
+    # Must preserve markdown bolding
+    assert "**Correctness and Completeness:**" in cleaned
+    # Must not have leading code block indentations
+    assert not cleaned.startswith("  ")
+
