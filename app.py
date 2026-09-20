@@ -26,7 +26,13 @@ from langchain.schema import HumanMessage, AIMessage
 from agent import build_agent, file_analysis_tool
 
 # --- Vector Memory ---
-from vector_memory import save_memory, clear_memory, get_memory_count, get_all_memories
+from vector_memory import (
+    save_memory,
+    clear_memory,
+    get_memory_count,
+    get_all_memories,
+    retrieve_relevant_memory,
+)
 
 # --- Security Layer ---
 from security_guard import (
@@ -717,6 +723,7 @@ with chat_tab:
         trace_steps    = []
         current_step   = {}
         final_response = None
+        memory_text    = None
         tool_used      = "N/A"
 
         async for event in agent.astream_events(inputs, version="v1"):
@@ -737,10 +744,16 @@ with chat_tab:
                     current_step["output"] = output
                     trace_steps.append(current_step)
                     current_step = {}
-                if isinstance(output, dict) and "final_response" in output:
-                    final_response = output["final_response"]
+                if isinstance(output, dict):
+                    if "final_response" in output:
+                        final_response = output["final_response"]
+                    if "memory_text" in output:
+                        memory_text = output["memory_text"]
 
-        return final_response, trace_steps, tool_used
+        if memory_text is None and isinstance(final_response, str):
+            memory_text = final_response
+
+        return final_response, trace_steps, tool_used, memory_text
 
     def pretty_print_dict(d):
         def safe_converter(o):
@@ -790,7 +803,6 @@ with chat_tab:
         # PROCEED WITH CLEAN PROMPT
         # ════════════════════════════════════════════════════════
         st.session_state.messages.append({"role": "user", "text": clean_prompt})
-        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
 
         for cache_key in ["history_cache", "audit_cache"]:
             if cache_key in st.session_state:
@@ -829,10 +841,14 @@ with chat_tab:
                         st.caption("🛡️ *Potentially harmful response was blocked by OutputGuard.*")
                     elif "[REDACTED:" in full_response:
                         st.caption("🛡️ *Some sensitive content was automatically redacted.*")
+                        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                        save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
+                    else:
+                        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                        save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
 
-                    save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
                     st.session_state.messages.append(
-                        {"role": "assistant", "text": full_response, "audio_bytes": None}
+                        {"role": "assistant", "text": full_response, "memory_text": full_response, "audio_bytes": None}
                     )
 
                 # ── PATH 2: Agent Execution ───────────────────
@@ -842,20 +858,28 @@ with chat_tab:
                         tavily_api_key, mistral_api_key,
                     )
 
+                    # Build chat history from prior messages (excluding current turn)
+                    # Assistant turns use distilled memory_text if present, avoiding judge evaluation pollution
                     chat_history = []
-                    for msg in st.session_state.messages:
+                    for msg in st.session_state.messages[:-1]:
                         if msg["role"] == "user":
                             chat_history.append(HumanMessage(content=msg["text"]))
-                        elif msg["role"] == "assistant" and "text" in msg:
-                            chat_history.append(AIMessage(content=msg["text"]))
+                        elif msg["role"] == "assistant":
+                            assistant_content = msg.get("memory_text") or msg.get("text", "")
+                            if assistant_content:
+                                chat_history.append(AIMessage(content=assistant_content))
+
+                    # Retrieve memory once before execution
+                    memory_context = retrieve_relevant_memory(clean_prompt, session_id=SESSION_ID)
 
                     inputs = {
-                        "query":      clean_prompt,
-                        "history":    chat_history,
-                        "session_id": SESSION_ID,
+                        "query":          clean_prompt,
+                        "history":        chat_history,
+                        "session_id":     SESSION_ID,
+                        "memory_context": memory_context,
                     }
 
-                    final_response, trace_steps, tool_used_key = asyncio.run(
+                    final_response, trace_steps, tool_used_key, memory_text = asyncio.run(
                         run_agent_and_capture_trajectory(agent, inputs)
                     )
                     st.session_state.trajectory.append(
@@ -884,9 +908,14 @@ with chat_tab:
                             if out_result.event_type == "OUTPUT_REDACTED":
                                 st.caption("🛡️ *Some sensitive content was automatically redacted.*")
 
-                        save_memory(role="assistant", content=final_response, session_id=SESSION_ID)
+                            # Only save memory if response was not blocked and succeeded
+                            # Use distilled memory_text (e.g. "[Gemini]: ...") instead of raw MoA output
+                            assistant_memory = memory_text or final_response
+                            save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                            save_memory(role="assistant", content=assistant_memory, session_id=SESSION_ID)
+
                         st.session_state.messages.append(
-                            {"role": "assistant", "text": final_response, "audio_bytes": None}
+                            {"role": "assistant", "text": final_response, "memory_text": memory_text, "audio_bytes": None}
                         )
 
                     elif isinstance(final_response, dict) and "image" in final_response:
@@ -895,11 +924,14 @@ with chat_tab:
                         img_data.save(buf, format="PNG")
                         byte_im  = buf.getvalue()
                         st.image(byte_im, caption=final_response.get("caption", clean_prompt))
+                        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                        save_memory(role="assistant", content=f"Image generated for prompt: {clean_prompt}", session_id=SESSION_ID)
                         st.session_state.messages.append({
                             "role":        "assistant",
                             "image_bytes": byte_im,
                             "text":        f"Image generated for: *{clean_prompt}*",
                             "caption":     final_response.get("caption", clean_prompt),
+                            "memory_text": f"Image generated for: {clean_prompt}",
                         })
 
                     else:

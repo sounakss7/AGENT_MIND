@@ -16,7 +16,7 @@ SECURITY UPDATE:
 
 import os
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
 from qdrant_client import QdrantClient
@@ -39,7 +39,15 @@ COLLECTION_NAME = "agent_mind_memory"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 VECTOR_DIM      = 384
 TOP_K           = 5
-SCORE_THRESHOLD = 0.35
+SCORE_THRESHOLD = float(os.environ.get("VECTOR_SCORE_THRESHOLD", "0.45"))
+
+_BLOCKED_OR_ERROR_PREFIXES = (
+    "[Response blocked",
+    "⚠️",
+    "Error:",
+    "I can't provide that information",
+    "Failed to generate image",
+)
 
 # ---------------------------------------------------------------------------
 # SINGLETON HELPERS
@@ -119,12 +127,20 @@ def save_memory(role: str, content: str, session_id: str) -> None:
     ── SECURITY: content is passed through MemoryGuard before storing.
     PII is redacted and a flag is stored in the payload.
     Requires a non-empty, session-isolated session_id.
+    Rejects errors and blocked response placeholders.
     """
     if not session_id or not session_id.strip():
         print("[VectorMemory] Refusing to save memory without a valid session_id.")
         return
     if not content or not content.strip():
         return
+
+    # Filter out error or blocked response placeholders
+    clean_strip = content.strip()
+    if clean_strip.startswith(_BLOCKED_OR_ERROR_PREFIXES) or "ran into an exception" in clean_strip:
+        print("[VectorMemory] Skipping storage of error/blocked response placeholder.")
+        return
+
     try:
         # ── Security: sanitise before saving ──────────────────────
         from security_guard import memory_guard, audit_logger, mask_session_id
@@ -168,11 +184,18 @@ def retrieve_relevant_memory(
     query: str,
     session_id: str,
     top_k: int = TOP_K,
-    score_threshold: float = SCORE_THRESHOLD,
+    score_threshold: Optional[float] = None,
+    max_chars: int = 2500,
 ) -> str:
-    """Search Qdrant Cloud for semantically relevant past messages strictly for session_id."""
+    """
+    Search Qdrant Cloud for semantically relevant past messages strictly for session_id.
+    Caps the maximum returned memory context to max_chars.
+    """
     if not session_id or not session_id.strip():
         return ""
+    if score_threshold is None:
+        score_threshold = SCORE_THRESHOLD
+
     try:
         client    = _get_client()
         query_vec = embed(query)
@@ -196,7 +219,11 @@ def retrieve_relevant_memory(
             role = p.get("role", "unknown").capitalize()
             ts   = p.get("timestamp", "")[:16].replace("T", " ")
             lines.append(f"{role} ({ts}): {p.get('content', '')}")
-        return "\n".join(lines)
+
+        full_context = "\n".join(lines)
+        if len(full_context) > max_chars:
+            full_context = full_context[:max_chars] + "\n[...additional memory truncated...]"
+        return full_context
     except Exception as e:
         print(f"[VectorMemory] Warning — could not retrieve memory: {e}")
         return ""

@@ -91,13 +91,14 @@ def comparison_and_evaluation_tool(
     groq_api_key: str,
     mistral_api_key: str,
     session_id: str = "default",
-) -> str:
+    memory_context: Optional[str] = None,
+) -> dict:
     print("---TOOL: Executing Comparison (Judged by Mistral with Memory)---")
 
     short_term_ctx = format_history(history)
-    long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id)
+    long_term_ctx  = memory_context if memory_context is not None else retrieve_relevant_memory(query, session_id=session_id)
     if long_term_ctx:
-        print(f"[VectorMemory] Retrieved {long_term_ctx.count(chr(10))} memory hits for comparison tool.")
+        print(f"[VectorMemory] Using memory context for comparison tool.")
         safe_memory_ctx = wrap_untrusted_data(long_term_ctx, "LONG_TERM_MEMORY", session_id=session_id)
     else:
         safe_memory_ctx = "None available."
@@ -192,7 +193,12 @@ Instructions:
     final_output += f"### Other Response ({loser_name})\n\n"
     final_output += f"#### Model: {loser_model_name}\n\n{loser_response}"
 
-    return final_output
+    distilled_memory = f"[{chosen_model_name}]: {chosen_answer}"
+
+    return {
+        "display":     final_output,
+        "memory_text": distilled_memory,
+    }
 
 
 # ===================================================================
@@ -292,12 +298,14 @@ Your Answer:
 # AGENT STATE, ROUTER, GRAPH
 # ===================================================================
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     query:          str
     history:        List[BaseMessage]
     route:          str
     final_response: Optional[any]
     session_id:     str
+    memory_context: Optional[str]
+    memory_text:    Optional[str]
 
 
 # --- NODE WRAPPERS ---
@@ -310,16 +318,25 @@ def call_comparison_tool(state: AgentState, google_api_key: str, groq_api_key: s
         groq_api_key,
         mistral_api_key,
         session_id=state.get("session_id", "default"),
+        memory_context=state.get("memory_context"),
     )
-    return {"final_response": response}
+    if isinstance(response, dict):
+        return {
+            "final_response": response["display"],
+            "memory_text":    response.get("memory_text", response["display"]),
+        }
+    return {"final_response": response, "memory_text": response}
 
 
 def call_image_tool(state: AgentState, google_api_key: str, pollinations_token: str):
-    return {"final_response": image_generation_tool(state["query"], google_api_key, pollinations_token)}
+    res = image_generation_tool(state["query"], google_api_key, pollinations_token)
+    mem_text = f"Image generated for prompt: {state['query']}" if isinstance(res, dict) and "image" in res else None
+    return {"final_response": res, "memory_text": mem_text}
 
 
 def call_web_search_tool(state: AgentState, tavily_api_key: str, google_api_key: str):
-    return {"final_response": web_search_tool(state["query"], tavily_api_key, google_api_key)}
+    res = web_search_tool(state["query"], tavily_api_key, google_api_key)
+    return {"final_response": res, "memory_text": res}
 
 
 # --- ROUTER ---
@@ -332,7 +349,9 @@ def router(state: AgentState, google_api_key: str):
     session_id = state.get("session_id", "default")
 
     short_term_ctx = format_history(history)
-    long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id, top_k=3)
+    long_term_ctx  = state.get("memory_context")
+    if long_term_ctx is None:
+        long_term_ctx = retrieve_relevant_memory(query, session_id=session_id, top_k=3)
     safe_memory_ctx = wrap_untrusted_data(long_term_ctx, "LONG_TERM_MEMORY", session_id=session_id) if long_term_ctx else "None."
 
     router_prompt = f"""
