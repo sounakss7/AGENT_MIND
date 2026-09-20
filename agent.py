@@ -112,38 +112,51 @@ def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: in
 def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3, timeout: int = 30):
     """
     Queries Mistral judge with retries and exponential backoff on rate limits / server errors.
+    Uses open-mistral-7b by default (free-tier compatible) with fallback to ministral-8b-latest.
     """
-    model = "mistral-small-latest"
+    if not mistral_api_key:
+        return "Error: No Mistral API key provided."
+
+    models_to_try = ["open-mistral-7b", "ministral-8b-latest"]
     headers = {"Authorization": f"Bearer {mistral_api_key}", "Content-Type": "application/json"}
-    data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1024}
 
-    delay = 1.0
-    for attempt in range(max_retries):
-        try:
-            resp = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
-                logging.warning(f"Mistral Judge {resp.status_code} received. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2
-                continue
-            else:
-                logging.error(f"Mistral Judge HTTP Error: {resp.status_code} - {resp.text}")
-                return f"Error: The Mistral judge failed to provide an evaluation (HTTP {resp.status_code})."
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            if attempt < max_retries - 1:
-                logging.warning(f"Mistral Judge network error: {e}. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2
-                continue
-            logging.error(f"Mistral Judge Timeout/Connection Error: {e}")
-            return f"Error: The Mistral judge timed out: {e}"
-        except Exception as e:
-            logging.error(f"Mistral Judge Exception: {e}")
-            return f"Error: The Mistral judge ran into an exception: {e}"
+    last_error = ""
+    for model in models_to_try:
+        data = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+        }
+        delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
+                if resp.status_code == 200:
+                    return resp.json()["choices"][0]["message"]["content"]
+                elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    logging.warning(f"Mistral Judge ({model}) {resp.status_code} received. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                else:
+                    logging.error(f"Mistral Judge ({model}) HTTP Error: {resp.status_code} - {resp.text}")
+                    last_error = f"HTTP {resp.status_code}"
+                    break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logging.warning(f"Mistral Judge ({model}) network error: {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logging.error(f"Mistral Judge ({model}) Timeout/Connection Error: {e}")
+                last_error = f"Timeout: {e}"
+                break
+            except Exception as e:
+                logging.error(f"Mistral Judge ({model}) Exception: {e}")
+                last_error = str(e)
+                break
 
-    return "Error: The Mistral judge exceeded max retries."
+    return f"Error: The Mistral judge failed to provide an evaluation ({last_error})."
 
 
 # =======================================================================================
@@ -207,6 +220,7 @@ Use the long-term memory only when the user refers to something discussed in a p
     gemini_text = gemini_result["error"] if gemini_has_err else (gemini_result or "")
     groq_text   = groq_result["error"] if groq_has_err else (groq_result.get("content", "") if isinstance(groq_result, dict) else str(groq_result))
     groq_model_name = groq_result.get("model_name", "Groq") if isinstance(groq_result, dict) else "Groq"
+    judge_source = "Automated Selection"
 
     # Case 1: Both models failed
     if gemini_has_err and groq_has_err:
@@ -219,6 +233,7 @@ Use the long-term memory only when the user refers to something discussed in a p
         winner_name = "Groq"
         loser_response, loser_model_name, loser_name = gemini_text, gemini_model_name, "Gemini (Failed)"
         judgment_clean = "Groq selected automatically because Gemini encountered an error."
+        judge_source = "Automated (Single Candidate)"
 
     # Case 3: Groq failed, Gemini succeeded
     elif groq_has_err and not gemini_has_err:
@@ -226,6 +241,7 @@ Use the long-term memory only when the user refers to something discussed in a p
         winner_name = "Gemini"
         loser_response, loser_model_name, loser_name = groq_text, groq_model_name, "Groq (Failed)"
         judgment_clean = "Gemini selected automatically because Groq encountered an error."
+        judge_source = "Automated (Single Candidate)"
 
     # Case 4: Both succeeded — call Mistral judge with randomized A/B order and neutral labels
     else:
@@ -266,6 +282,19 @@ Instructions:
 """
         print("---JUDGE: Calling Mistral for evaluation---")
         judgment = query_mistral_judge(judge_prompt, mistral_api_key)
+        judge_source = "Mistral"
+
+        # Fallback to Gemini judge if Mistral is rate-limited or fails
+        if judgment.startswith("Error:"):
+            logging.warning(f"Mistral judge failed: {judgment}. Falling back to Gemini as secondary judge...")
+            try:
+                judge_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+                gemini_judgment = judge_llm.invoke(judge_prompt).content
+                judgment = gemini_judgment
+                judge_source = "Gemini (Fallback Judge)"
+            except Exception as e:
+                logging.error(f"Gemini fallback judge error: {e}")
+                judge_source = "Automated Fallback"
 
         # Robust winner parsing (JSON or regex fallback)
         chosen_ab = "A"
@@ -325,7 +354,7 @@ Instructions:
 
     final_output  = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
-    final_output += f"### 🧠 Judge's Evaluation (from Mistral)\n{judgment_clean}\n\n---\n\n"
+    final_output += f"### 🧠 Judge's Evaluation (from {judge_source})\n{judgment_clean}\n\n---\n\n"
     final_output += f"### Other Response ({loser_name})\n\n"
     final_output += f"#### Model: {loser_model_name}\n\n{loser_clean}"
 

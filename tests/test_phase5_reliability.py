@@ -176,6 +176,39 @@ def test_comparison_tool_blind_evaluation_prompt_and_json_parsing():
         assert res["memory_text"] == "[llama-3.1-8b-instant]: Groq response text."
 
 
+def test_comparison_tool_falls_back_to_gemini_judge_when_mistral_errors():
+    """Verify judge falls back to Gemini 2.5 Flash when Mistral returns HTTP 429/error."""
+    with patch("agent.ChatGoogleGenerativeAI") as mock_gemini_cls, \
+         patch("agent.query_groq") as mock_groq, \
+         patch("agent.query_mistral_judge") as mock_judge, \
+         patch("agent.random.choice", return_value=True):  # Gemini is A, Groq is B
+
+        gemini_candidate_mock = MagicMock()
+        gemini_candidate_mock.invoke.return_value.content = "Gemini candidate response."
+
+        gemini_judge_mock = MagicMock()
+        gemini_judge_mock.invoke.return_value.content = '{"winner": "A", "reasoning": "Response A is more complete."}'
+
+        # First call is candidate generation, second call is fallback judge
+        mock_gemini_cls.side_effect = [gemini_candidate_mock, gemini_judge_mock]
+
+        mock_groq.return_value = {
+            "model_name": "llama-3.1-8b-instant",
+            "content": "Groq candidate response.",
+        }
+
+        # Mistral judge returns HTTP 429 error
+        mock_judge.return_value = "Error: The Mistral judge failed to provide an evaluation (HTTP 429)."
+
+        res = comparison_and_evaluation_tool("test prompt", [], "fake_google_key", "fake_groq_key", "fake_mistral_key")
+
+        # Judge source should indicate Gemini Fallback Judge
+        assert "🧠 Judge's Evaluation (from Gemini (Fallback Judge))" in res["display"]
+        assert "🏆 Judged Best Answer (Gemini)" in res["display"]
+        assert res["memory_text"] == "[gemini-2.5-flash]: Gemini candidate response."
+
+
+
 # ===========================================================================
 # 4. Router Fallback Chain
 # ===========================================================================
