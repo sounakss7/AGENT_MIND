@@ -15,6 +15,26 @@ from functools import partial
 from tavily import TavilyClient
 from urllib.parse import quote_plus
 import logging
+import hashlib
+
+# Document processing fallbacks
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:
+        PdfReader = None
 
 # =======================================================================================
 # VECTOR MEMORY IMPORT
@@ -352,20 +372,94 @@ User's prompt: "{prompt}"
         return {"error": f"Failed to generate image: {e}"}
 
 
+def extract_file_text(
+    file_bytes: bytes,
+    file_type: str = "",
+    file_name: str = "",
+    max_ocr_pages: int = 10,
+    warn_callback = None,
+    info_callback = None,
+) -> str:
+    """
+    Extracts text from uploaded file bytes (PDF or plain text/code).
+    For PDFs without an embedded text layer, performs OCR via PyMuPDF (fitz)
+    at 200 DPI, capped at max_ocr_pages with a warning banner.
+    """
+    is_pdf = "pdf" in (file_type or "").lower() or (file_name or "").lower().endswith(".pdf")
+    file_text = ""
+
+    if is_pdf:
+        if PdfReader is not None:
+            try:
+                reader = PdfReader(BytesIO(file_bytes))
+                for page in reader.pages:
+                    file_text += (page.extract_text() or "")
+            except Exception as e:
+                logging.warning(f"PdfReader extraction failed: {e}")
+
+        if not file_text.strip():
+            if info_callback:
+                info_callback("No text layer found. Performing OCR...")
+            if fitz is not None and pytesseract is not None:
+                try:
+                    doc = fitz.open(stream=file_bytes, filetype="pdf")
+                    total_pages = len(doc)
+                    pages_to_ocr = min(total_pages, max_ocr_pages)
+                    if total_pages > max_ocr_pages:
+                        msg = f"⚠️ Document has {total_pages} pages. OCR is capped at the first {max_ocr_pages} pages to prevent timeouts."
+                        if warn_callback:
+                            warn_callback(msg)
+                        logging.warning(msg)
+
+                    for i in range(pages_to_ocr):
+                        page = doc[i]
+                        # 200 DPI ensures crisp resolution for reliable OCR recognition
+                        pix = page.get_pixmap(dpi=200)
+                        img = Image.open(BytesIO(pix.tobytes("png")))
+                        page_text = pytesseract.image_to_string(img)
+                        if page_text:
+                            file_text += page_text + "\n"
+                except Exception as e:
+                    logging.error(f"OCR processing failed: {e}")
+                    if warn_callback:
+                        warn_callback(f"⚠️ OCR processing failed: {e}")
+            else:
+                msg = "⚠️ OCR dependencies (fitz / pytesseract) not available to process image-only PDF."
+                if warn_callback:
+                    warn_callback(msg)
+                logging.warning(msg)
+    else:
+        file_text = file_bytes.decode("utf-8", errors="ignore")
+
+    return file_text
+
+
 # ===================================================================
 # TOOL 3: FILE ANALYSIS
 # ===================================================================
-def file_analysis_tool(question: str, file_content_as_text: str, google_api_key: str):
+def file_analysis_tool(
+    question: str,
+    file_content_as_text: str,
+    google_api_key: str,
+    history: Optional[List[BaseMessage]] = None,
+):
     print("---TOOL: Executing Empowered File Analysis---")
     streaming_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key, streaming=True)
 
     safe_file_content = wrap_untrusted_data(file_content_as_text[:40000], "UPLOADED_FILE")
+
+    history_section = ""
+    if history:
+        history_text = format_history(history)
+        if history_text and history_text != "No previous context.":
+            history_section = f"\n**Recent Conversation Context:**\n{history_text}\n"
+
     prompt = f"""
 **Your Persona:** You are a highly intelligent AI assistant and a multi-disciplinary expert.
 
 **The Task:** A user has uploaded a file and asked a question. Use the file content as the
 primary source of truth, but enrich your answer with your own expertise.
-
+{history_section}
 **User's Question:**
 {question}
 

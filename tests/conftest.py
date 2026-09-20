@@ -25,6 +25,10 @@ for mod_name in [
     "langchain_google_genai",
     "langgraph",
     "langgraph.graph",
+    "fitz",
+    "pytesseract",
+    "pypdf",
+    "PyPDF2",
 ]:
     if mod_name not in sys.modules:
         try:

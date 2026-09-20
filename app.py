@@ -8,6 +8,7 @@ import pytesseract
 from datetime import datetime, timezone
 import re
 import time
+import hashlib
 import pandas as pd
 import random
 from urllib.parse import quote_plus
@@ -23,7 +24,7 @@ from gtts import gTTS
 from langchain.schema import HumanMessage, AIMessage
 
 # --- Import the Agent Logic ---
-from agent import build_agent, file_analysis_tool
+from agent import build_agent, file_analysis_tool, extract_file_text
 
 # --- Vector Memory ---
 from vector_memory import (
@@ -211,6 +212,8 @@ if "metrics" not in st.session_state:
     }
 if "security_events" not in st.session_state:
     st.session_state.security_events = []   # in-session event log for sidebar badge
+if "file_cache" not in st.session_state:
+    st.session_state.file_cache = {}
 
 
 # =================================================================================
@@ -613,6 +616,15 @@ with st.sidebar:
         "Upload a file to ask questions about it",
         type=["pdf", "txt", "py", "js", "html", "css"],
     )
+    ask_about_file = False
+    if uploaded_file:
+        ask_about_file = st.checkbox(
+            "📎 Ask about attached file",
+            value=False,
+            help="Check to direct your question to the uploaded file. Uncheck to chat normally with agent tools.",
+        )
+        if not ask_about_file:
+            st.caption("ℹ️ File attached but inactive. Check the box above to query this file.")
 
     # ── Utilities ─────────────────────────────────────────────────
     st.header("🧭 Utilities")
@@ -621,6 +633,8 @@ with st.sidebar:
         for cache_key in ["history_cache", "audit_cache", "audit_cache_my", "audit_cache_all"]:
             if cache_key in st.session_state:
                 del st.session_state[cache_key]
+        if "file_cache" in st.session_state:
+            st.session_state.file_cache = {}
         st.session_state.messages        = []
         st.session_state.trajectory      = []
         st.session_state.security_events = []
@@ -814,27 +828,38 @@ with chat_tab:
                 tool_used_key = ""
 
                 # ── PATH 1: File Analysis ─────────────────────
-                if uploaded_file:
+                if uploaded_file and ask_about_file:
                     tool_used_key = "File Analysis"
                     try:
-                        file_bytes    = uploaded_file.read()
-                        file_text     = ""
+                        file_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+                        file_hash  = hashlib.sha256(file_bytes).hexdigest()
 
-                        if "pdf" in uploaded_file.type:
-                            reader = PdfReader(BytesIO(file_bytes))
-                            for page in reader.pages:
-                                file_text += page.extract_text() or ""
-                            if not file_text.strip():
-                                st.info("No text layer found. Performing OCR...")
-                                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                                for page in doc:
-                                    pix = page.get_pixmap()
-                                    img = Image.open(BytesIO(pix.tobytes("png")))
-                                    file_text += pytesseract.image_to_string(img)
+                        if "file_cache" not in st.session_state:
+                            st.session_state.file_cache = {}
+
+                        if file_hash in st.session_state.file_cache:
+                            file_text = st.session_state.file_cache[file_hash]
                         else:
-                            file_text = file_bytes.decode("utf-8", errors="ignore")
+                            file_text = extract_file_text(
+                                file_bytes=file_bytes,
+                                file_type=getattr(uploaded_file, "type", ""),
+                                file_name=getattr(uploaded_file, "name", ""),
+                                warn_callback=st.warning,
+                                info_callback=st.info,
+                            )
+                            st.session_state.file_cache[file_hash] = file_text
 
-                        raw_stream    = file_analysis_tool(clean_prompt, file_text, google_api_key)
+                        # Build chat history from prior messages (excluding current turn)
+                        chat_history = []
+                        for msg in st.session_state.messages[:-1]:
+                            if msg["role"] == "user":
+                                chat_history.append(HumanMessage(content=msg["text"]))
+                            elif msg["role"] == "assistant":
+                                assistant_content = msg.get("memory_text") or msg.get("text", "")
+                                if assistant_content:
+                                    chat_history.append(AIMessage(content=assistant_content))
+
+                        raw_stream    = file_analysis_tool(clean_prompt, file_text, google_api_key, history=chat_history)
                         guarded       = guarded_stream(raw_stream, session_id=SESSION_ID, holdback_chars=64)
                         full_response = st.write_stream(guarded)
 
