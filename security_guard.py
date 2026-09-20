@@ -18,7 +18,7 @@ import hashlib
 import uuid
 import logging
 import secrets
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -569,9 +569,9 @@ class AuditLogger:
       session_id, event_type, severity, detail, findings, timestamp
 
     Severity levels:
-      INFO  — normal operation
-      WARN  — suspicious but allowed (PII redacted, etc.)
-      BLOCK — request or response was blocked
+      INFO  — normal operation (kept in local session, not persisted to Qdrant)
+      WARN  — suspicious / security warnings (persisted to Qdrant Cloud)
+      BLOCK — blocked attacks or lockouts (persisted to Qdrant Cloud)
     """
 
     COLLECTION = AUDIT_COLLECTION
@@ -588,7 +588,13 @@ class AuditLogger:
         "OUTPUT_BLOCKED":            "BLOCK",
         "MEMORY_PASSED":             "INFO",
         "MEMORY_REDACTED":           "WARN",
+        "AUTH_SUCCESS":              "INFO",
+        "AUTH_FAILED":               "WARN",
+        "AUTH_LOCKOUT":              "BLOCK",
     }
+
+    def __init__(self):
+        self._initialized = False
 
     def _get_client(self):
         try:
@@ -598,6 +604,8 @@ class AuditLogger:
             return None
 
     def _ensure_collection(self, client) -> None:
+        if self._initialized:
+            return
         from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
         try:
             existing = [c.name for c in client.get_collections().collections]
@@ -607,7 +615,7 @@ class AuditLogger:
                     vectors_config  = VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
                 )
                 print(f"[AuditLogger] Created collection '{self.COLLECTION}'.")
-            for field in ["session_id", "severity", "event_type"]:
+            for field in ["session_id", "severity", "event_type", "timestamp"]:
                 try:
                     client.create_payload_index(
                         collection_name = self.COLLECTION,
@@ -616,14 +624,50 @@ class AuditLogger:
                     )
                 except Exception:
                     pass
+
+            # Prune events older than 30 days once at startup
+            self.cleanup_old_events(days=30, client=client)
+            self._initialized = True
         except Exception as e:
             logging.warning(f"[AuditLogger] _ensure_collection error: {e}")
 
+    def cleanup_old_events(self, days: int = 30, client = None) -> int:
+        """
+        Deletes audit log points older than `days` days from Qdrant.
+        """
+        if client is None:
+            client = self._get_client()
+        if client is None:
+            return 0
+        try:
+            from qdrant_client.models import Filter, FieldCondition, Range, FilterSelector
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            del_filter = Filter(must=[
+                FieldCondition(key="timestamp", range=Range(lt=cutoff))
+            ])
+            client.delete(
+                collection_name = self.COLLECTION,
+                points_selector = FilterSelector(filter=del_filter),
+            )
+            logging.info(f"[AuditLogger] Cleaned up audit events older than {days} days.")
+            return 1
+        except Exception as e:
+            logging.warning(f"[AuditLogger] Could not cleanup old audit events: {e}")
+            return 0
+
     def log(self, session_id: str, event_type: str,
             detail: str = "", findings: list = None) -> None:
-        """Write one security event to Qdrant."""
+        """
+        Logs a security event.
+        Prints all events. Persists WARN and BLOCK events to Qdrant Cloud.
+        INFO events are skipped from cloud persistence to save vector database storage.
+        """
         severity = self._SEVERITY_MAP.get(event_type, "INFO")
         print(f"[AUDIT] {severity} | {event_type} | {mask_session_id(session_id)} | {detail[:80]}")
+
+        # Save Qdrant storage quota: only persist actionable threats/warnings
+        if severity not in ("WARN", "BLOCK"):
+            return
 
         client = self._get_client()
         if client is None:
@@ -642,7 +686,7 @@ class AuditLogger:
                         "severity":   severity,
                         "detail":     detail[:500],
                         "findings":   findings or [],
-                        "timestamp":  datetime.utcnow().isoformat(),
+                        "timestamp":  datetime.now(timezone.utc).isoformat(),
                     },
                 )],
             )
@@ -686,9 +730,73 @@ class AuditLogger:
     def get_stats(self, session_id: Optional[str] = None) -> dict:
         """
         Aggregate counts used by the Security Dashboard.
-        If session_id is provided, returns statistics scoped exclusively to that session.
-        If session_id is None, returns global statistics across all sessions (admin only).
+        Uses client.count() for fast, low-bandwidth counting without scrolling full payloads.
+        Falls back to scrolling if client.count() is unavailable or fails.
         """
+        client = self._get_client()
+        if client is None:
+            return {
+                "total":            0,
+                "by_severity":      {"INFO": 0, "WARN": 0, "BLOCK": 0},
+                "by_type":          {},
+                "injections_today": 0,
+            }
+
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+            self._ensure_collection(client)
+
+            must_base = []
+            if session_id:
+                must_base.append(FieldCondition(key="session_id", match=MatchValue(value=session_id)))
+
+            if hasattr(client, "count"):
+                # Total count
+                tot_filter = Filter(must=must_base) if must_base else None
+                res_total = client.count(collection_name=self.COLLECTION, count_filter=tot_filter, exact=True)
+                total_count = res_total.count if hasattr(res_total, "count") else int(res_total)
+
+                # Counts by severity
+                by_severity = {"INFO": 0, "WARN": 0, "BLOCK": 0}
+                for sev in ["WARN", "BLOCK"]:
+                    s_filter = Filter(must=must_base + [FieldCondition(key="severity", match=MatchValue(value=sev))])
+                    res_s = client.count(collection_name=self.COLLECTION, count_filter=s_filter, exact=True)
+                    by_severity[sev] = res_s.count if hasattr(res_s, "count") else int(res_s)
+
+                # Prompt injections today
+                today_iso = date.today().isoformat()
+                inj_filter = Filter(must=must_base + [
+                    FieldCondition(key="event_type", match=MatchValue(value="PROMPT_INJECTION")),
+                    FieldCondition(key="timestamp", range=Range(gte=today_iso)),
+                ])
+                res_inj = client.count(collection_name=self.COLLECTION, count_filter=inj_filter, exact=True)
+                injections_today = res_inj.count if hasattr(res_inj, "count") else int(res_inj)
+
+                # Event types breakdown (most common threat types)
+                by_type = {}
+                common_types = [
+                    "PROMPT_INJECTION", "INDIRECT_PROMPT_INJECTION",
+                    "OUTPUT_BLOCKED", "OUTPUT_REDACTED",
+                    "INPUT_TOO_LONG", "GIBBERISH_INPUT",
+                    "AUTH_FAILED", "AUTH_LOCKOUT", "AUTH_SUCCESS"
+                ]
+                for typ in common_types:
+                    t_filter = Filter(must=must_base + [FieldCondition(key="event_type", match=MatchValue(value=typ))])
+                    res_t = client.count(collection_name=self.COLLECTION, count_filter=t_filter, exact=True)
+                    cnt = res_t.count if hasattr(res_t, "count") else int(res_t)
+                    if cnt > 0:
+                        by_type[typ] = cnt
+
+                return {
+                    "total":            total_count,
+                    "by_severity":      by_severity,
+                    "by_type":          by_type,
+                    "injections_today": injections_today,
+                }
+        except Exception as e:
+            logging.warning(f"[AuditLogger] client.count failed, falling back to scroll: {e}")
+
+        # Fallback to scrolling if count fails or is not supported
         events = self.get_events(session_id=session_id, limit=1000)
         today  = str(date.today())
         stats  = {

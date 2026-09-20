@@ -169,7 +169,7 @@ def save_memory(role: str, content: str, session_id: str) -> None:
                         "role":         role,
                         "content":      safe_content,
                         "session_id":   session_id.strip(),
-                        "timestamp":    datetime.utcnow().isoformat(),
+                        "timestamp":    datetime.now(timezone.utc).isoformat(),
                         "pii_redacted": guard_result.event_type == "MEMORY_REDACTED",
                     },
                 )

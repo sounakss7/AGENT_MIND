@@ -538,16 +538,20 @@ with st.sidebar:
                 st.session_state.auth_attempts += 1
                 if st.session_state.auth_attempts >= 5:
                     st.session_state.auth_lockout_until = time.time() + 60.0
+                    audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_LOCKOUT", detail="Maximum 5 auth attempts reached. Locked out for 60 seconds.")
                     st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
                 else:
+                    audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_FAILED", detail="Auth attempted with empty name.")
                     st.warning("Please enter your name first.")
             elif len(pin_input.strip()) < 6:
                 st.session_state.auth_attempts += 1
                 if st.session_state.auth_attempts >= 5:
                     st.session_state.auth_lockout_until = time.time() + 60.0
+                    audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_LOCKOUT", detail="Maximum 5 auth attempts reached. Locked out for 60 seconds.")
                     st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
                 else:
                     remaining_attempts = 5 - st.session_state.auth_attempts
+                    audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_FAILED", detail=f"Short PIN attempted ({remaining_attempts} attempts left).")
                     st.warning(f"PIN must be at least 6 characters. ({remaining_attempts} attempts left)")
             else:
                 try:
@@ -560,15 +564,17 @@ with st.sidebar:
                         if cache_key in st.session_state:
                             del st.session_state[cache_key]
                     SESSION_ID = clean
-                    audit_logger.log(SESSION_ID, "INPUT_PASSED", detail="Account session ID derived and set.")
+                    audit_logger.log(SESSION_ID, "AUTH_SUCCESS", detail="Account session ID derived and set.")
                     st.success("🔐 Secure account identity verified and set.")
                     st.rerun()
                 except ValueError as ve:
                     st.session_state.auth_attempts += 1
                     if st.session_state.auth_attempts >= 5:
                         st.session_state.auth_lockout_until = time.time() + 60.0
+                        audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_LOCKOUT", detail="Maximum 5 auth attempts reached. Locked out for 60 seconds.")
                         st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
                     else:
+                        audit_logger.log(mask_session_id(name_input.strip() or "anonymous"), "AUTH_FAILED", detail=str(ve))
                         st.error(str(ve))
 
     with col_reset:
