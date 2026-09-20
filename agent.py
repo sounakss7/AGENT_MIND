@@ -21,7 +21,7 @@ from vector_memory import retrieve_relevant_memory
 # =======================================================================================
 # SECURITY LAYER IMPORT
 # =======================================================================================
-from security_guard import input_guard, output_guard, audit_logger
+from security_guard import input_guard, output_guard, audit_logger, wrap_untrusted_data
 
 # =======================================================================================
 # HELPER FUNCTIONS
@@ -98,10 +98,13 @@ def comparison_and_evaluation_tool(
     long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id)
     if long_term_ctx:
         print(f"[VectorMemory] Retrieved {long_term_ctx.count(chr(10))} memory hits for comparison tool.")
+        safe_memory_ctx = wrap_untrusted_data(long_term_ctx, "LONG_TERM_MEMORY", session_id=session_id)
+    else:
+        safe_memory_ctx = "None available."
 
     full_prompt_with_context = f"""
 LONG-TERM MEMORY (semantically relevant past interactions):
-{long_term_ctx if long_term_ctx else "None available."}
+{safe_memory_ctx}
 
 SHORT-TERM CONTEXT (recent conversation turns):
 {short_term_ctx}
@@ -136,7 +139,7 @@ Use the long-term memory only when the user refers to something discussed in a p
 You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
 
 ### Long-Term Memory Context:
-{long_term_ctx if long_term_ctx else "None."}
+{safe_memory_ctx}
 
 ### Short-Term Conversation Context:
 {short_term_ctx}
@@ -234,6 +237,7 @@ def file_analysis_tool(question: str, file_content_as_text: str, google_api_key:
     print("---TOOL: Executing Empowered File Analysis---")
     streaming_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key, streaming=True)
 
+    safe_file_content = wrap_untrusted_data(file_content_as_text[:40000], "UPLOADED_FILE")
     prompt = f"""
 **Your Persona:** You are a highly intelligent AI assistant and a multi-disciplinary expert.
 
@@ -244,9 +248,7 @@ primary source of truth, but enrich your answer with your own expertise.
 {question}
 
 **Provided File Content:**
----
-{file_content_as_text[:40000]}
----
+{safe_file_content}
 
 **Your Comprehensive Analysis:**
 """
@@ -262,6 +264,7 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
         tavily         = TavilyClient(api_key=tavily_api_key)
         search_results = tavily.search(query=query, search_depth="advanced", max_results=5)
         search_content = "\n".join([r["content"] for r in search_results["results"]])
+        safe_search_content = wrap_untrusted_data(search_content, "WEB_SEARCH")
 
         analyzer_llm    = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
         analysis_prompt = f"""
@@ -271,9 +274,7 @@ You are an expert research analyst. Answer the query based ONLY on the search re
 {query}
 
 ### Web Search Results:
----
-{search_content}
----
+{safe_search_content}
 
 Your Answer:
 """
@@ -332,12 +333,13 @@ def router(state: AgentState, google_api_key: str):
 
     short_term_ctx = format_history(history)
     long_term_ctx  = retrieve_relevant_memory(query, session_id=session_id, top_k=3)
+    safe_memory_ctx = wrap_untrusted_data(long_term_ctx, "LONG_TERM_MEMORY", session_id=session_id) if long_term_ctx else "None."
 
     router_prompt = f"""
 You are a master routing agent. Determine the user's primary intent.
 
 Long-Term Memory Context (past relevant exchanges):
-{long_term_ctx if long_term_ctx else "None."}
+{safe_memory_ctx}
 
 Short-Term Context (recent turns):
 {short_term_ctx}

@@ -13,6 +13,7 @@ import random
 from urllib.parse import quote_plus
 import asyncio
 import json
+import html
 from collections import defaultdict
 
 # --- TTS Library ---
@@ -36,6 +37,8 @@ from security_guard import (
     make_session_id,
     generate_ephemeral_id,
     mask_session_id,
+    guarded_stream,
+    wrap_untrusted_data,
 )
 
 # =================================================================================
@@ -89,34 +92,38 @@ def generate_audio_from_text(text: str) -> bytes | None:
 
 def create_copy_button(text_to_copy: str, button_key: str):
     button_id = f"copy_btn_{button_key}"
-    text_id   = f"text_{button_key}"
-    safe_text = text_to_copy.replace('"', '&quot;').replace("'", "&apos;").replace('\n', '\\n')
+    # Embed text safely via json.dumps and escape </script> to prevent script termination / XSS
+    safe_json = json.dumps(text_to_copy).replace("</script>", "<\\/script>").replace("</Script>", "<\\/Script>")
     html_code = f"""
-        <textarea id="{text_id}" style="position: absolute; left: -9999px;">{safe_text}</textarea>
         <button id="{button_id}" style="
             background-color: transparent; border: 1px solid #4CAF50; color: #4CAF50;
             padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 12px;">
             Copy Text
-        </button>"""
-    js_code = f"""
+        </button>
         <script>
-            document.getElementById("{button_id}").addEventListener("click", function() {{
-                var text = document.getElementById("{text_id}").value;
-                navigator.clipboard.writeText(text).then(function() {{
-                    var btn = document.getElementById("{button_id}");
-                    var originalText = btn.innerHTML;
-                    btn.innerHTML = 'Copied!';
-                    btn.style.borderColor = "#ffffff";
-                    btn.style.color = "#ffffff";
-                    setTimeout(function() {{
-                        btn.innerHTML = originalText;
-                        btn.style.borderColor = "#4CAF50";
-                        btn.style.color = "#4CAF50";
-                    }}, 2000);
-                }}, function(err) {{ console.error('Could not copy text: ', err); }});
-            }});
+            (function() {{
+                const copyText = {safe_json};
+                const btn = document.getElementById("{button_id}");
+                if (btn) {{
+                    btn.addEventListener("click", function() {{
+                        navigator.clipboard.writeText(copyText).then(function() {{
+                            const originalText = btn.innerHTML;
+                            btn.innerHTML = 'Copied!';
+                            btn.style.borderColor = "#ffffff";
+                            btn.style.color = "#ffffff";
+                            setTimeout(function() {{
+                                btn.innerHTML = originalText;
+                                btn.style.borderColor = "#4CAF50";
+                                btn.style.color = "#4CAF50";
+                            }}, 2000);
+                        }}, function(err) {{
+                            console.error('Could not copy text: ', err);
+                        }});
+                    }});
+                }}
+            }})();
         </script>"""
-    st.components.v1.html(html_code + js_code, height=40)
+    st.components.v1.html(html_code, height=40)
 
 
 def set_animated_fluid_background():
@@ -336,29 +343,31 @@ def render_history_tab():
                     st.caption(f"🕐 {turn['timestamp'][:19].replace('T', ' ')} UTC")
                 st.markdown("---")
 
-                st.markdown("**🧑 You asked:**")
+                user_escaped = html.escape(turn["user_content"])
                 st.markdown(
                     f'<div style="background:rgba(79,142,247,0.15);border-left:3px solid #4f8ef7;'
                     f'padding:10px 14px;border-radius:6px;margin-bottom:8px">'
-                    f'{turn["user_content"]}</div>',
+                    f'{user_escaped}</div>',
                     unsafe_allow_html=True,
                 )
 
                 if turn["asst_content"]:
                     st.markdown("**🤖 Neuroplexa replied:**")
                     asst_text = turn["asst_content"]
+                    asst_escaped = html.escape(asst_text[:1500])
                     if len(asst_text) > 1500:
                         st.markdown(
                             f'<div style="background:rgba(26,188,156,0.1);border-left:3px solid #1abc9c;'
-                            f'padding:10px 14px;border-radius:6px">{asst_text[:1500]}…</div>',
+                            f'padding:10px 14px;border-radius:6px">{asst_escaped}…</div>',
                             unsafe_allow_html=True,
                         )
                         with st.expander("Show full response"):
                             st.markdown(asst_text)
                     else:
+                        asst_full_escaped = html.escape(asst_text)
                         st.markdown(
                             f'<div style="background:rgba(26,188,156,0.1);border-left:3px solid #1abc9c;'
-                            f'padding:10px 14px;border-radius:6px">{asst_text}</div>',
+                            f'padding:10px 14px;border-radius:6px">{asst_full_escaped}</div>',
                             unsafe_allow_html=True,
                         )
 
@@ -812,17 +821,13 @@ with chat_tab:
                     else:
                         file_text = file_bytes.decode("utf-8", errors="ignore")
 
-                    response_stream = file_analysis_tool(clean_prompt, file_text, google_api_key)
-                    full_response   = st.write_stream(response_stream)
+                    raw_stream    = file_analysis_tool(clean_prompt, file_text, google_api_key)
+                    guarded       = guarded_stream(raw_stream, session_id=SESSION_ID, holdback_chars=64)
+                    full_response = st.write_stream(guarded)
 
-                    # Output guard
-                    out_result    = output_guard.validate(full_response)
-                    full_response = out_result.clean_text
-                    if out_result.event_type not in ("OUTPUT_PASSED",):
-                        audit_logger.log(SESSION_ID, out_result.event_type,
-                                         detail=out_result.reason,
-                                         findings=out_result.findings)
-                    if out_result.event_type == "OUTPUT_REDACTED":
+                    if "[Response blocked" in full_response:
+                        st.caption("🛡️ *Potentially harmful response was blocked by OutputGuard.*")
+                    elif "[REDACTED:" in full_response:
                         st.caption("🛡️ *Some sensitive content was automatically redacted.*")
 
                     save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
@@ -930,18 +935,17 @@ with chat_tab:
     if st.session_state.trajectory:
         with st.expander("🕵️ Agent Trajectory (Debug View)", expanded=False):
             for run in reversed(st.session_state.trajectory):
-                st.markdown(f"#### Prompt: *'{run.get('prompt', 'N/A')}'*")
+                prompt_label = html.escape(str(run.get('prompt', 'N/A')))
+                st.markdown(f"#### Prompt: *'{prompt_label}'*")
                 for step in run.get("steps", []):
                     st.markdown(f"##### 🎬 Step: `{step.get('name', 'Unknown')}`")
                     c_in, c_out = st.columns(2)
                     with c_in:
                         st.markdown("**Input:**")
-                        st.markdown(pretty_print_dict(step.get("input", {})),
-                                    unsafe_allow_html=True)
+                        st.markdown(pretty_print_dict(step.get("input", {})))
                     with c_out:
                         st.markdown("**Output:**")
-                        st.markdown(pretty_print_dict(step.get("output", {})),
-                                    unsafe_allow_html=True)
+                        st.markdown(pretty_print_dict(step.get("output", {})))
                 st.markdown("---")
 
     # ── Feedback ──────────────────────────────────────────────────
