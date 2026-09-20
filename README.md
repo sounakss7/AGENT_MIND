@@ -235,7 +235,13 @@ pip install -r requirements.txt
 
 AGENT_MIND reads API credentials securely from Streamlit Secrets or Environment Variables.
 
-Create a secrets configuration file at `.streamlit/secrets.toml`:
+A complete example template is provided at `.streamlit/secrets.toml.example`. Simply copy it to configure your local environment:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
+
+Edit `.streamlit/secrets.toml`:
 
 ```toml
 # .streamlit/secrets.toml
@@ -254,6 +260,10 @@ POLLINATIONS_TOKEN = "your_pollinations_api_token_here"
 # ── Vector Memory & Security Telemetry (Qdrant Cloud) ─────────
 QDRANT_URL = "https://your-cluster-id.region.qdrant.tech:6333"
 QDRANT_API_KEY = "your_qdrant_cloud_api_key_here"
+
+# ── Security & Authentication ─────────────────────────────────
+AUTH_PEPPER = "your-high-entropy-server-pepper-secret"
+ADMIN = false
 ```
 
 ### Obtaining Free API Keys:

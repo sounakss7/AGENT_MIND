@@ -29,6 +29,8 @@ for mod_name in [
     "pytesseract",
     "pypdf",
     "PyPDF2",
+    "pandas",
+    "gtts",
 ]:
     if mod_name not in sys.modules:
         try:

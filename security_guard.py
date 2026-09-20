@@ -33,20 +33,28 @@ VECTOR_DIM       = 384
 # 1. HASHED SESSION IDENTITY & CRYPTOGRAPHIC DERIVATION
 # ═══════════════════════════════════════════════════════════════════════════
 
+def get_secret(key: str, default: str = "") -> str:
+    """
+    Retrieves secret from Streamlit secrets (st.secrets) or environment variables (os.environ),
+    falling back to default without raising KeyError.
+    """
+    try:
+        import streamlit as st
+        val = st.secrets.get(key)
+        if val is not None:
+            return str(val)
+    except Exception:
+        pass
+    import os
+    return os.environ.get(key, default)
+
+
 def get_auth_pepper() -> str:
     """
     Retrieve server-side pepper from Streamlit secrets or environment.
     Falls back to a default pepper if not configured.
     """
-    try:
-        import streamlit as st
-        pepper = st.secrets.get("AUTH_PEPPER")
-        if pepper:
-            return str(pepper)
-    except Exception:
-        pass
-    import os
-    return os.environ.get("AUTH_PEPPER", "default_pepper_salt_neuroplexa_2024")
+    return get_secret("AUTH_PEPPER", "default_pepper_salt_neuroplexa_2024")
 
 
 def make_session_id(name: str, pin: str, pepper: Optional[str] = None) -> str:

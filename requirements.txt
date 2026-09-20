@@ -1,35 +1,32 @@
-PyPDF2
+# ==============================================================================
+# AGENT_MIND / Neuroplexa AI Dependencies
+# Cleaned, deduplicated, and pruned (Phase 8 Hygiene)
+# ==============================================================================
+
+# --- Core UI & Data ---
 streamlit
-python-dotenv
-langchain
-langsmith
-langchain-google-genai
-google-generativeai
-fal-client
-openai
-langchain-openai
-pillow
+pandas
 python-dotenv
 requests
-audio-recorder-streamlit
-PyPDF2
-pytesseract
-pdf2image
 Pillow
+
+# --- Document Processing & Speech ---
+gTTS
+PyPDF2
 pymupdf
-concurrent-log-handler
-feedparser
-langgraph
+pytesseract
+
+# --- Search & External Services ---
 tavily-python
-pandas
-# --- LangChain Ecosystem (COMPATIBLE SET) ---
+langsmith
+
+# --- Vector Database & Embeddings ---
+qdrant-client==1.9.1
+sentence-transformers>=2.7.0
+
+# --- LangChain Ecosystem (Strictly Compatible Pinned Set) ---
 langchain==0.1.17
 langchain-core==0.1.52
 langchain-google-genai==0.0.11
 langchain-openai==0.1.7
-langgraph==0.0.30  
-gTTS
-datasets
-python-dotenv
-qdrant-client==1.9.1
-sentence-transformers>=2.7.0
+langgraph==0.0.30

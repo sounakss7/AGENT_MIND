@@ -46,6 +46,7 @@ from security_guard import (
     mask_session_id,
     guarded_stream,
     wrap_untrusted_data,
+    get_secret,
 )
 
 # =================================================================================
@@ -181,17 +182,16 @@ set_animated_fluid_background()
 
 
 # =================================================================================
-# LOAD SECRETS
+# LOAD SECRETS (Graceful fallback for optional keys)
 # =================================================================================
-try:
-    google_api_key     = st.secrets["GOOGLE_API_KEY"]
-    pollinations_token = st.secrets["POLLINATIONS_TOKEN"]
-    groq_api_key       = st.secrets["GROQ_API_KEY"]
-    mistral_api_key    = st.secrets["MISTRAL_API_KEY"]
-    tavily_api_key     = st.secrets["TAVILY_API_KEY"]
-except KeyError as e:
-    st.error(f"❌ Missing Secret: {e}. Please add it to your Streamlit Secrets.")
-    st.stop()
+google_api_key     = get_secret("GOOGLE_API_KEY")
+pollinations_token = get_secret("POLLINATIONS_TOKEN")
+groq_api_key       = get_secret("GROQ_API_KEY")
+mistral_api_key    = get_secret("MISTRAL_API_KEY")
+tavily_api_key     = get_secret("TAVILY_API_KEY")
+
+if not google_api_key and not groq_api_key:
+    st.warning("⚠️ Neither GOOGLE_API_KEY nor GROQ_API_KEY is configured. Please provide at least one API key in .streamlit/secrets.toml or environment variables.")
 
 
 # =================================================================================
@@ -509,9 +509,10 @@ with st.sidebar:
     st.caption("Same name + PIN = same memories on ANY device.")
 
     now = time.time()
-    is_locked = now < st.session_state.get("auth_lockout_until", 0.0)
+    lockout_time = st.session_state.get("auth_lockout_until", 0.0) if hasattr(st.session_state, "get") else 0.0
+    is_locked = (now < lockout_time) if isinstance(lockout_time, (int, float)) else False
     if is_locked:
-        remaining = int(st.session_state["auth_lockout_until"] - now)
+        remaining = int(lockout_time - now)
         st.error(f"⛔ Too many failed attempts. Locked out for {remaining}s.")
 
     name_input = st.text_input(
