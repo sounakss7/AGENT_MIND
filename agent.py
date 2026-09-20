@@ -1,5 +1,8 @@
 import os
 import re
+import time
+import json
+import random
 import requests
 from io import BytesIO
 from PIL import Image
@@ -50,34 +53,77 @@ def choose_groq_model(prompt: str):
         return "llama-3.1-8b-instant"
 
 
-def query_groq(prompt: str, groq_api_key: str):
+def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: int = 30):
+    """
+    Queries the Groq API with retries and exponential backoff on transient/rate errors.
+    Returns a dict with 'model_name' and either 'content' or 'error'.
+    """
     model = choose_groq_model(prompt)
     headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
     data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 2048}
-    try:
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=data, headers=headers)
-        if resp.status_code == 200:
-            content = resp.json()["choices"][0]["message"]["content"]
-            return {"model_name": model, "content": content}
-        return f"❌ Groq API Error: {resp.text}"
-    except Exception as e:
-        return f"⚠️ Groq Error: {e}"
+
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"]
+                return {"model_name": model, "content": content}
+            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                logging.warning(f"Groq API {resp.status_code} received. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                return {"model_name": model, "error": f"Groq API Error ({resp.status_code}): {resp.text}"}
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < max_retries - 1:
+                logging.warning(f"Groq network error: {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {"model_name": model, "error": f"Groq Timeout/Connection Error: {e}"}
+        except Exception as e:
+            return {"model_name": model, "error": f"Groq Error: {e}"}
+
+    return {"model_name": model, "error": "Groq API exceeded max retries."}
 
 
-def query_mistral_judge(prompt: str, mistral_api_key: str):
+def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3, timeout: int = 30):
+    """
+    Queries Mistral judge with retries and exponential backoff on rate limits / server errors.
+    """
     model = "mistral-small-latest"
     headers = {"Authorization": f"Bearer {mistral_api_key}", "Content-Type": "application/json"}
     data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1024}
-    try:
-        resp = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-    except requests.exceptions.HTTPError as http_err:
-        logging.error(f"Mistral Judge HTTP Error: {http_err} - {resp.text}")
-        return "Error: The Mistral judge failed to provide an evaluation (HTTP error)."
-    except Exception as e:
-        logging.error(f"Mistral Judge Exception: {e}")
-        return f"Error: The Mistral judge ran into an exception: {e}"
+
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                logging.warning(f"Mistral Judge {resp.status_code} received. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                logging.error(f"Mistral Judge HTTP Error: {resp.status_code} - {resp.text}")
+                return f"Error: The Mistral judge failed to provide an evaluation (HTTP {resp.status_code})."
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < max_retries - 1:
+                logging.warning(f"Mistral Judge network error: {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            logging.error(f"Mistral Judge Timeout/Connection Error: {e}")
+            return f"Error: The Mistral judge timed out: {e}"
+        except Exception as e:
+            logging.error(f"Mistral Judge Exception: {e}")
+            return f"Error: The Mistral judge ran into an exception: {e}"
+
+    return "Error: The Mistral judge exceeded max retries."
 
 
 # =======================================================================================
@@ -121,23 +167,61 @@ Use the long-term memory only when the user refers to something discussed in a p
     fast_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
     gemini_model_name = "gemini-2.5-flash"
 
+    def _safe_gemini():
+        try:
+            return fast_llm.invoke(full_prompt_with_context).content
+        except Exception as e:
+            logging.error(f"Gemini generation error: {e}")
+            return {"error": f"Gemini Error: {e}"}
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_gemini = executor.submit(lambda: fast_llm.invoke(full_prompt_with_context).content)
+        future_gemini = executor.submit(_safe_gemini)
         future_groq   = executor.submit(query_groq, full_prompt_with_context, groq_api_key)
-        gemini_response = future_gemini.result()
-        groq_result     = future_groq.result()
+        gemini_result = future_gemini.result()
+        groq_result   = future_groq.result()
 
-    groq_response   = ""
-    groq_model_name = "Groq (Error)"
+    # Determine errors on each side
+    gemini_has_err = isinstance(gemini_result, dict) and "error" in gemini_result
+    groq_has_err   = isinstance(groq_result, dict) and "error" in groq_result
 
-    if isinstance(groq_result, dict):
-        groq_response   = groq_result["content"]
-        groq_model_name = groq_result["model_name"]
+    gemini_text = gemini_result["error"] if gemini_has_err else (gemini_result or "")
+    groq_text   = groq_result["error"] if groq_has_err else (groq_result.get("content", "") if isinstance(groq_result, dict) else str(groq_result))
+    groq_model_name = groq_result.get("model_name", "Groq") if isinstance(groq_result, dict) else "Groq"
+
+    # Case 1: Both models failed
+    if gemini_has_err and groq_has_err:
+        err_msg = f"### ⚠️ Both models failed to respond.\n\n- **Gemini:** {gemini_text}\n- **Groq:** {groq_text}"
+        return {"display": err_msg, "memory_text": ""}
+
+    # Case 2: Gemini failed, Groq succeeded
+    if gemini_has_err and not groq_has_err:
+        chosen_answer, chosen_model_name = groq_text, groq_model_name
+        winner_name = "Groq"
+        loser_response, loser_model_name, loser_name = gemini_text, gemini_model_name, "Gemini (Failed)"
+        judgment_clean = "Groq selected automatically because Gemini encountered an error."
+
+    # Case 3: Groq failed, Gemini succeeded
+    elif groq_has_err and not gemini_has_err:
+        chosen_answer, chosen_model_name = gemini_text, gemini_model_name
+        winner_name = "Gemini"
+        loser_response, loser_model_name, loser_name = groq_text, groq_model_name, "Groq (Failed)"
+        judgment_clean = "Gemini selected automatically because Groq encountered an error."
+
+    # Case 4: Both succeeded — call Mistral judge with randomized A/B order and neutral labels
     else:
-        groq_response = groq_result
+        is_gemini_a = random.choice([True, False])
+        if is_gemini_a:
+            resp_a, resp_b = gemini_text, groq_text
+            model_a, model_b = gemini_model_name, groq_model_name
+            label_a, label_b = "Gemini", "Groq"
+        else:
+            resp_a, resp_b = groq_text, gemini_text
+            model_a, model_b = groq_model_name, gemini_model_name
+            label_a, label_b = "Groq", "Gemini"
 
-    judge_prompt = f"""
-You are an impartial AI evaluator. Compare two responses to a user's query and declare a winner.
+        judge_prompt = f"""
+You are an impartial AI evaluator. Compare two candidate responses to a user's query and declare a winner.
+Evaluate purely on merit, correctness, helpfulness, and adherence to instructions.
 
 ### Long-Term Memory Context:
 {safe_memory_ctx}
@@ -148,47 +232,69 @@ You are an impartial AI evaluator. Compare two responses to a user's query and d
 ### Current User Query:
 {query}
 
-### Response A (Gemini):
-{gemini_response}
+### Response A:
+{resp_a}
 
-### Response B (Groq - model: {groq_model_name}):
-{groq_response}
+### Response B:
+{resp_b}
 
 Instructions:
-1. Begin with "Winner: Gemini" or "Winner: Groq".
-2. Explain your reasoning. Did the models use the memory context correctly?
-3. Evaluate purely on merit.
+1. Determine which response is superior (A or B).
+2. Output your response as a JSON object with:
+   {{"winner": "A" or "B", "reasoning": "brief explanation"}}
+   If JSON is not possible, begin your response with "Winner: A" or "Winner: B".
 """
+        print("---JUDGE: Calling Mistral for evaluation---")
+        judgment = query_mistral_judge(judge_prompt, mistral_api_key)
 
-    print("---JUDGE: Calling Mistral for evaluation---")
-    judgment = query_mistral_judge(judge_prompt, mistral_api_key)
+        # Robust winner parsing (JSON or regex fallback)
+        chosen_ab = "A"
+        try:
+            json_match = re.search(r"\{[\s\S]*?\"winner\"\s*:\s*\"([AB])\"[\s\S]*?\}", judgment, re.IGNORECASE)
+            if json_match:
+                chosen_ab = json_match.group(1).upper()
+            else:
+                regex_match = re.search(r"winner\s*:\s*(?:response\s+)?([AB])\b", judgment, re.IGNORECASE)
+                if regex_match:
+                    chosen_ab = regex_match.group(1).upper()
+                else:
+                    if "Winner: Gemini" in judgment or "winner: gemini" in judgment.lower():
+                        chosen_ab = "A" if is_gemini_a else "B"
+                    elif "Winner: Groq" in judgment or "winner: groq" in judgment.lower():
+                        chosen_ab = "B" if is_gemini_a else "A"
+        except Exception:
+            chosen_ab = "A"
 
-    match       = re.search(r"winner\s*:\s*(gemini|groq)", judgment, re.IGNORECASE)
-    winner_name = match.group(1).capitalize() if match else "Evaluation"
+        if chosen_ab == "A":
+            winner_name = label_a
+            chosen_answer, chosen_model_name = resp_a, model_a
+            loser_response, loser_model_name, loser_name = resp_b, model_b, label_b
+        else:
+            winner_name = label_b
+            chosen_answer, chosen_model_name = resp_b, model_b
+            loser_response, loser_model_name, loser_name = resp_a, model_a, label_a
 
-    if winner_name == "Gemini":
-        chosen_answer, chosen_model_name = gemini_response, gemini_model_name
-        loser_response, loser_model_name, loser_name = groq_response, groq_model_name, "Groq"
-    elif winner_name == "Groq":
-        chosen_answer, chosen_model_name = groq_response, groq_model_name
-        loser_response, loser_model_name, loser_name = gemini_response, gemini_model_name, "Gemini"
-    else:
-        chosen_answer, chosen_model_name = gemini_response, gemini_model_name
-        loser_response, loser_model_name, loser_name = groq_response, groq_model_name, "Groq"
+        # Clean judge evaluation
+        judge_res = output_guard.validate(judgment)
+        judgment_clean = judge_res.clean_text if judge_res.passed else "[Judge evaluation omitted due to content policy]"
+        if judge_res.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
+            audit_logger.log(
+                session_id = session_id,
+                event_type = judge_res.event_type,
+                detail     = f"[Judge] {judge_res.reason}",
+                findings   = judge_res.findings,
+            )
 
-    # ── OUTPUT GUARD: sanitise winner, judgment, and loser separately ──
+    # ── OUTPUT GUARD: sanitise winner and loser separately ──
     chosen_result = output_guard.validate(chosen_answer)
     chosen_answer = chosen_result.clean_text
     if not chosen_result.passed:
         chosen_answer = "[Response blocked: winning answer violated content policy]"
 
-    judge_result = output_guard.validate(judgment)
-    judgment_clean = judge_result.clean_text if judge_result.passed else "[Judge evaluation omitted due to content policy]"
-
     loser_result = output_guard.validate(loser_response)
     loser_clean = loser_result.clean_text if loser_result.passed else "[Alternative response omitted due to content policy]"
 
-    for res, label in [(chosen_result, "Winner"), (judge_result, "Judge"), (loser_result, "Alternative")]:
+    for res, label in [(chosen_result, "Winner"), (loser_result, "Alternative")]:
         if res.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
             audit_logger.log(
                 session_id = session_id,
@@ -279,12 +385,21 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
     try:
         tavily         = TavilyClient(api_key=tavily_api_key)
         search_results = tavily.search(query=query, search_depth="advanced", max_results=5)
-        search_content = "\n".join([r["content"] for r in search_results["results"]])
+        
+        formatted_results = []
+        for r in search_results.get("results", []):
+            title = r.get("title", "Source")
+            url   = r.get("url", "")
+            snippet = r.get("content", "")
+            formatted_results.append(f"Source: [{title}]({url})\nContent: {snippet}\n")
+
+        search_content = "\n".join(formatted_results)
         safe_search_content = wrap_untrusted_data(search_content, "WEB_SEARCH")
 
         analyzer_llm    = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
         analysis_prompt = f"""
 You are an expert research analyst. Answer the query based ONLY on the search results provided.
+Cite the source titles and markdown links where relevant.
 
 ### User Query:
 {query}
@@ -349,11 +464,20 @@ def call_web_search_tool(state: AgentState, tavily_api_key: str, google_api_key:
     return {"final_response": res, "memory_text": res}
 
 
-# --- ROUTER ---
+# --- ROUTER & FALLBACKS ---
 
-def router(state: AgentState, google_api_key: str):
+def keyword_router_fallback(query: str) -> str:
+    """Deterministic rule-based routing fallback if LLMs fail."""
+    q = query.lower()
+    if any(k in q for k in ["generate image", "create an image", "draw", "sketch", "picture of"]):
+        return "image_generator"
+    if any(k in q for k in ["search", "weather", "latest news", "today", "current price", "who won", "stock price", "browse"]):
+        return "web_search"
+    return "comparison_chat"
+
+
+def router(state: AgentState, google_api_key: str, groq_api_key: Optional[str] = None):
     print("---AGENT: Routing query---")
-    router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
     query      = state["query"]
     history    = state.get("history", [])
     session_id = state.get("session_id", "default")
@@ -382,17 +506,43 @@ Choices:
 
 Return ONLY the tool name.
 """
-    response = router_llm.invoke(router_prompt).content.strip()
+    decision = None
 
-    if "web_search_tool" in response:
-        print("---AGENT: Decision -> Web Search Tool---")
-        return {"route": "web_search"}
-    elif "image_generation_tool" in response:
-        print("---AGENT: Decision -> Image Generation Tool---")
-        return {"route": "image_generator"}
-    else:
-        print("---AGENT: Decision -> Comparison & Evaluation Tool---")
-        return {"route": "comparison_chat"}
+    # Step 1: Try primary router (Gemini)
+    if google_api_key:
+        try:
+            router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+            response = router_llm.invoke(router_prompt).content.strip()
+            if "web_search_tool" in response:
+                decision = "web_search"
+            elif "image_generation_tool" in response:
+                decision = "image_generator"
+            elif "comparison_tool" in response:
+                decision = "comparison_chat"
+        except Exception as e:
+            logging.warning(f"Primary Gemini router error: {e}. Attempting Groq fallback...")
+
+    # Step 2: Try secondary router (Groq)
+    if decision is None and groq_api_key:
+        try:
+            groq_res = query_groq(router_prompt, groq_api_key, max_retries=1, timeout=10)
+            if isinstance(groq_res, dict) and "content" in groq_res:
+                resp_text = groq_res["content"].strip()
+                if "web_search_tool" in resp_text:
+                    decision = "web_search"
+                elif "image_generation_tool" in resp_text:
+                    decision = "image_generator"
+                elif "comparison_tool" in resp_text:
+                    decision = "comparison_chat"
+        except Exception as e:
+            logging.warning(f"Secondary Groq router error: {e}. Attempting keyword fallback...")
+
+    # Step 3: Tertiary deterministic keyword fallback
+    if decision is None:
+        decision = keyword_router_fallback(query)
+        print(f"---AGENT: Fallback router selected -> {decision}---")
+
+    return {"route": decision}
 
 
 # --- BUILD AGENT ---
@@ -401,7 +551,7 @@ def build_agent(google_api_key: str, groq_api_key: str, pollinations_token: str,
                 tavily_api_key: str, mistral_api_key: str):
     workflow = StateGraph(AgentState)
 
-    router_with_keys  = partial(router, google_api_key=google_api_key)
+    router_with_keys  = partial(router, google_api_key=google_api_key, groq_api_key=groq_api_key)
     comparison_node   = partial(call_comparison_tool, google_api_key=google_api_key,
                                 groq_api_key=groq_api_key, mistral_api_key=mistral_api_key)
     image_node        = partial(call_image_tool, google_api_key=google_api_key,

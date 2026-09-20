@@ -816,40 +816,46 @@ with chat_tab:
                 # ── PATH 1: File Analysis ─────────────────────
                 if uploaded_file:
                     tool_used_key = "File Analysis"
-                    file_bytes    = uploaded_file.read()
-                    file_text     = ""
+                    try:
+                        file_bytes    = uploaded_file.read()
+                        file_text     = ""
 
-                    if "pdf" in uploaded_file.type:
-                        reader = PdfReader(BytesIO(file_bytes))
-                        for page in reader.pages:
-                            file_text += page.extract_text() or ""
-                        if not file_text.strip():
-                            st.info("No text layer found. Performing OCR...")
-                            doc = fitz.open(stream=file_bytes, filetype="pdf")
-                            for page in doc:
-                                pix = page.get_pixmap()
-                                img = Image.open(BytesIO(pix.tobytes("png")))
-                                file_text += pytesseract.image_to_string(img)
-                    else:
-                        file_text = file_bytes.decode("utf-8", errors="ignore")
+                        if "pdf" in uploaded_file.type:
+                            reader = PdfReader(BytesIO(file_bytes))
+                            for page in reader.pages:
+                                file_text += page.extract_text() or ""
+                            if not file_text.strip():
+                                st.info("No text layer found. Performing OCR...")
+                                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                                for page in doc:
+                                    pix = page.get_pixmap()
+                                    img = Image.open(BytesIO(pix.tobytes("png")))
+                                    file_text += pytesseract.image_to_string(img)
+                        else:
+                            file_text = file_bytes.decode("utf-8", errors="ignore")
 
-                    raw_stream    = file_analysis_tool(clean_prompt, file_text, google_api_key)
-                    guarded       = guarded_stream(raw_stream, session_id=SESSION_ID, holdback_chars=64)
-                    full_response = st.write_stream(guarded)
+                        raw_stream    = file_analysis_tool(clean_prompt, file_text, google_api_key)
+                        guarded       = guarded_stream(raw_stream, session_id=SESSION_ID, holdback_chars=64)
+                        full_response = st.write_stream(guarded)
 
-                    if "[Response blocked" in full_response:
-                        st.caption("🛡️ *Potentially harmful response was blocked by OutputGuard.*")
-                    elif "[REDACTED:" in full_response:
-                        st.caption("🛡️ *Some sensitive content was automatically redacted.*")
-                        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
-                        save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
-                    else:
-                        save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
-                        save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
+                        if "[Response blocked" in full_response:
+                            st.caption("🛡️ *Potentially harmful response was blocked by OutputGuard.*")
+                        elif "[REDACTED:" in full_response:
+                            st.caption("🛡️ *Some sensitive content was automatically redacted.*")
+                            save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                            save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
+                        else:
+                            save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                            save_memory(role="assistant", content=full_response, session_id=SESSION_ID)
 
-                    st.session_state.messages.append(
-                        {"role": "assistant", "text": full_response, "memory_text": full_response, "audio_bytes": None}
-                    )
+                        st.session_state.messages.append(
+                            {"role": "assistant", "text": full_response, "memory_text": full_response, "audio_bytes": None}
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Error during file analysis: {e}")
+                        st.session_state.messages.append(
+                            {"role": "assistant", "text": f"Error: Failed to analyze file: {e}", "audio_bytes": None}
+                        )
 
                 # ── PATH 2: Agent Execution ───────────────────
                 else:
@@ -879,9 +885,17 @@ with chat_tab:
                         "memory_context": memory_context,
                     }
 
-                    final_response, trace_steps, tool_used_key, memory_text = asyncio.run(
-                        run_agent_and_capture_trajectory(agent, inputs)
-                    )
+                    try:
+                        final_response, trace_steps, tool_used_key, memory_text = asyncio.run(
+                            run_agent_and_capture_trajectory(agent, inputs)
+                        )
+                    except Exception as e:
+                        logging.error(f"Agent execution error: {e}")
+                        final_response = {"error": f"Agent encountered an unexpected failure: {e}"}
+                        trace_steps = []
+                        tool_used_key = "Error"
+                        memory_text = None
+
                     st.session_state.trajectory.append(
                         {"prompt": clean_prompt, "steps": trace_steps}
                     )
