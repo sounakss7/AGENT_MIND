@@ -176,22 +176,32 @@ Instructions:
         chosen_answer, chosen_model_name = gemini_response, gemini_model_name
         loser_response, loser_model_name, loser_name = groq_response, groq_model_name, "Groq"
 
-    # ── OUTPUT GUARD: sanitise before returning ────────────────
-    chosen_result  = output_guard.validate(chosen_answer)
-    chosen_answer  = chosen_result.clean_text
-    if chosen_result.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
-        audit_logger.log(
-            session_id = session_id,
-            event_type = chosen_result.event_type,
-            detail     = chosen_result.reason,
-            findings   = chosen_result.findings,
-        )
+    # ── OUTPUT GUARD: sanitise winner, judgment, and loser separately ──
+    chosen_result = output_guard.validate(chosen_answer)
+    chosen_answer = chosen_result.clean_text
+    if not chosen_result.passed:
+        chosen_answer = "[Response blocked: winning answer violated content policy]"
+
+    judge_result = output_guard.validate(judgment)
+    judgment_clean = judge_result.clean_text if judge_result.passed else "[Judge evaluation omitted due to content policy]"
+
+    loser_result = output_guard.validate(loser_response)
+    loser_clean = loser_result.clean_text if loser_result.passed else "[Alternative response omitted due to content policy]"
+
+    for res, label in [(chosen_result, "Winner"), (judge_result, "Judge"), (loser_result, "Alternative")]:
+        if res.event_type in ("OUTPUT_REDACTED", "OUTPUT_BLOCKED"):
+            audit_logger.log(
+                session_id = session_id,
+                event_type = res.event_type,
+                detail     = f"[{label}] {res.reason}",
+                findings   = res.findings,
+            )
 
     final_output  = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
-    final_output += f"### 🧠 Judge's Evaluation (from Mistral)\n{judgment}\n\n---\n\n"
+    final_output += f"### 🧠 Judge's Evaluation (from Mistral)\n{judgment_clean}\n\n---\n\n"
     final_output += f"### Other Response ({loser_name})\n\n"
-    final_output += f"#### Model: {loser_model_name}\n\n{loser_response}"
+    final_output += f"#### Model: {loser_model_name}\n\n{loser_clean}"
 
     distilled_memory = f"[{chosen_model_name}]: {chosen_answer}"
 

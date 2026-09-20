@@ -12,6 +12,7 @@ Provides:
   • AuditLogger       — writes every security event to a Qdrant collection
 """
 
+import os
 import re
 import hashlib
 import uuid
@@ -109,7 +110,20 @@ def mask_session_id(sid: str) -> str:
 # 2. PROMPT INJECTION PATTERNS
 # ═══════════════════════════════════════════════════════════════════════════
 
-_INJECTION_PATTERNS = [
+_SYSTEM_TOKEN_PATTERNS = [
+    r"\[system\]",
+    r"\[inst\]",
+    r"<\|system\|>",
+    r"<\|im_start\|>",
+    r"###\s*(instruction|system|override)",
+]
+_COMPILED_SYSTEM_TOKENS = [re.compile(p, re.IGNORECASE) for p in _SYSTEM_TOKEN_PATTERNS]
+
+_CASE_SENSITIVE_INJECTIONS = [
+    re.compile(r"\bDAN\b"),
+]
+
+_BEHAVIORAL_INJECTION_PATTERNS = [
     # Classic instruction overrides
     r"ignore\s+(all\s+)?(previous|prior|your|my|the)\s+(instructions?|prompts?|rules?|context)",
     r"disregard\s+(all\s+)?(previous|prior|your|my|the)\s+(instructions?|prompts?|rules?)",
@@ -122,60 +136,114 @@ _INJECTION_PATTERNS = [
     r"pretend\s+(you\s+are|to\s+be)",
     r"your\s+(real|true|actual|hidden)\s+(self|purpose|goal|name|role)",
     r"switch\s+(to|into)\s+(developer|admin|god|jailbreak|unrestricted)\s+mode",
-    r"developer\s+mode",
+    r"(enable|activate|switch\s+to|enter)\s+developer\s+mode\s+(and|to)\s+(ignore|bypass|override)",
+    r"\bdeveloper\s+mode\s+(output|jailbreak|prompt|unlocked|enabled|v\d)\b",
     r"jailbreak",
-    r"\bDAN\b",
     r"do\s+anything\s+now",
-
-    # System-level token injection
-    r"\[system\]",
-    r"\[inst\]",
-    r"<\|system\|>",
-    r"<\|im_start\|>",
-    r"###\s*(instruction|system|override)",
 
     # Secret / credential extraction
     r"reveal\s+.{0,40}(key|token|secret|password|api|credential)",
-    r"print\s+.{0,20}(key|token|secret|password)",
+    r"(print|reveal|display|output)\s+(your|the)\s+(api[_\s\-]?key|environment\s+variables?|secrets?|passwords?|auth\s+tokens?)",
+    r"print\s+(the\s+)?(api[_\s\-]?key|auth\s+token|secret[_\s\-]?key|system\s+password|master\s+key)",
     r"what\s+(is|are)\s+(your|the)\s+(api\s+key|secret|token|password)",
 
     # Harmful content generation
-    r"(give\s+me|tell\s+me|explain\s+how\s+to)\s+(make|build|create|synthesize)\s+(bomb|weapon|malware|virus|ransomware|exploit)",
+    r"(give\s+me|tell\s+me|explain\s+how\s+to)\s+(make|build|create|synthesize)\s+(an?\s+)?(bomb|weapon|malware|virus|ransomware|exploit)",
 
     # Prompt leaking
     r"(repeat|print|output|show|tell\s+me)\s+(the\s+)?(system\s+prompt|instructions|above\s+text)",
 ]
+_COMPILED_BEHAVIORAL_INJECTIONS = [re.compile(p, re.IGNORECASE) for p in _BEHAVIORAL_INJECTION_PATTERNS]
 
-_COMPILED_INJECTIONS = [re.compile(p, re.IGNORECASE) for p in _INJECTION_PATTERNS]
+_COMPILED_INJECTIONS = _COMPILED_SYSTEM_TOKENS + _CASE_SENSITIVE_INJECTIONS + _COMPILED_BEHAVIORAL_INJECTIONS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 3. PII / SECRET REDACTION PATTERNS
+# 3. PII / SECRET REDACTION PATTERNS & VALIDATORS
 # ═══════════════════════════════════════════════════════════════════════════
+
+def is_luhn_valid(card_number: str) -> bool:
+    """Validate card number using the Luhn checksum algorithm."""
+    digits = [int(c) for c in card_number if c.isdigit()]
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+    if len(set(digits)) == 1:
+        return False
+    checksum = 0
+    reverse_digits = digits[::-1]
+    for i, digit in enumerate(reverse_digits):
+        if i % 2 == 1:
+            doubled = digit * 2
+            checksum += (doubled - 9) if doubled > 9 else doubled
+        else:
+            checksum += digit
+    return checksum % 10 == 0
+
+
+def is_valid_ipv4(ip_str: str) -> bool:
+    """Check that an IPv4 candidate consists of exactly 4 octets in [0, 255]."""
+    parts = ip_str.split(".")
+    if len(parts) != 4:
+        return False
+    for p in parts:
+        if not p.isdigit() or len(p) > 3 or (len(p) > 1 and p[0] == "0"):
+            return False
+        val = int(p)
+        if val < 0 or val > 255:
+            return False
+    return True
+
 
 _REDACT_PATTERNS = {
     "EMAIL":       re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
-    "PHONE_IN":    re.compile(r"\b(\+91[\-\s]?)?[6-9]\d{9}\b"),
-    "PHONE_INTL":  re.compile(r"\b\+?[1-9]\d{7,14}\b"),
-    "CREDIT_CARD": re.compile(r"\b(?:\d[ \-]?){13,16}\b"),
-    "AADHAAR":     re.compile(r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"),
+    "PHONE_IN":    re.compile(r"\b(?:\+91[\-\s]?)?[6-9]\d{4}[\-\s]?\d{5}\b"),
+    "PHONE_INTL":  re.compile(r"\+[1-9]\d{0,3}[-.\s]?(?:\(?\d{1,4}\)?[-.\s]?){1,4}\d{2,4}\b"),
+    "CREDIT_CARD": re.compile(r"\b(?:\d[ \-]?){13,19}\b"),
+    "AADHAAR":     re.compile(r"\b[2-9]\d{3}[\s\-]?\d{4}[\s\-]?\d{4}\b"),
     "PAN":         re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
     "GOOGLE_KEY":  re.compile(r"AIza[0-9A-Za-z\-_]{35}"),
     "GROQ_KEY":    re.compile(r"gsk_[A-Za-z0-9]{40,}"),
     "OPENAI_KEY":  re.compile(r"sk-[A-Za-z0-9]{20,}"),
     "AWS_KEY":     re.compile(r"AKIA[0-9A-Z]{16}"),
     "GH_TOKEN":    re.compile(r"ghp_[A-Za-z0-9]{36}"),
-    "IP_ADDR":     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    "IP_ADDR":     re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"),
 }
 
 
 def _redact_pii(text: str) -> tuple[str, list[str]]:
     """Replace PII/secrets with [REDACTED:<TYPE>]. Returns (clean_text, findings)."""
     findings = []
+
+    # 1. Credit card with Luhn verification
+    cc_pattern = _REDACT_PATTERNS["CREDIT_CARD"]
+    def _cc_sub(match):
+        raw = match.group(0)
+        if is_luhn_valid(raw):
+            if "CREDIT_CARD" not in findings:
+                findings.append("CREDIT_CARD")
+            return "[REDACTED:CREDIT_CARD]"
+        return raw
+    text = cc_pattern.sub(_cc_sub, text)
+
+    # 2. IPv4 address with range 0-255 verification
+    ip_pattern = _REDACT_PATTERNS["IP_ADDR"]
+    def _ip_sub(match):
+        raw = match.group(0)
+        if is_valid_ipv4(raw):
+            if "IP_ADDR" not in findings:
+                findings.append("IP_ADDR")
+            return "[REDACTED:IP_ADDR]"
+        return raw
+    text = ip_pattern.sub(_ip_sub, text)
+
+    # 3. Standard regex redactions
     for label, pattern in _REDACT_PATTERNS.items():
+        if label in ("CREDIT_CARD", "IP_ADDR"):
+            continue
         if pattern.search(text):
             findings.append(label)
             text = pattern.sub(f"[REDACTED:{label}]", text)
+
     return text, findings
 
 
@@ -215,13 +283,14 @@ class InputGuard:
     Validates every user query BEFORE it reaches the LangGraph router.
 
     Checks (in order):
-      1. Length limit         — prevents context-flooding attacks
+      1. Length limit         — prevents context-flooding attacks (configurable, default 12000)
       2. Null-byte stripping  — silent sanitisation
-      3. Gibberish detection  — blocks keyboard-spam / nonsense
-      4. Prompt injection     — blocks jailbreak / override attempts
-      5. Code block strip     — removes ``` blocks to prevent framing attacks
+      3. Gibberish detection  — blocks keyboard-spam / nonsense (skipping code blocks)
+      4. Prompt injection     — checks system tokens across entire text, and behavioral
+                               jailbreaks outside code blocks
+      5. Preserves user code blocks intact in returned clean_text
     """
-    MAX_QUERY_LEN = 3000
+    MAX_QUERY_LEN = int(os.environ.get("MAX_QUERY_LEN", "12000"))
 
     def validate(self, text: str) -> GuardResult:
 
@@ -246,9 +315,12 @@ class InputGuard:
                 event_type = "EMPTY_INPUT",
             )
 
-        # 3. Gibberish detection
-        words = clean.split()
-        if len(clean) > 30:
+        # Extract text outside code blocks for semantic checks
+        text_outside_code = re.sub(r"```[\s\S]*?```", " ", clean)
+
+        # 3. Gibberish detection on prose (outside code blocks)
+        words = text_outside_code.split()
+        if len(text_outside_code.strip()) > 30:
             avg_word_len = sum(len(w) for w in words) / max(len(words), 1)
             if avg_word_len > 18:
                 return GuardResult(
@@ -259,8 +331,31 @@ class InputGuard:
                 )
 
         # 4. Prompt injection detection
-        for pattern in _COMPILED_INJECTIONS:
+        # 4a. Structural system tokens check anywhere (including in code)
+        for pattern in _COMPILED_SYSTEM_TOKENS:
             if pattern.search(clean):
+                return GuardResult(
+                    passed     = False,
+                    clean_text = clean,
+                    reason     = "Prompt injection attempt detected (system token).",
+                    event_type = "PROMPT_INJECTION",
+                    findings   = [pattern.pattern],
+                )
+
+        # 4b. Case-sensitive jailbreaks (e.g. DAN) outside code
+        for pattern in _CASE_SENSITIVE_INJECTIONS:
+            if pattern.search(text_outside_code):
+                return GuardResult(
+                    passed     = False,
+                    clean_text = clean,
+                    reason     = "Prompt injection attempt detected (jailbreak persona).",
+                    event_type = "PROMPT_INJECTION",
+                    findings   = [pattern.pattern],
+                )
+
+        # 4c. Behavioral injection patterns outside code
+        for pattern in _COMPILED_BEHAVIORAL_INJECTIONS:
+            if pattern.search(text_outside_code):
                 return GuardResult(
                     passed     = False,
                     clean_text = clean,
@@ -269,9 +364,7 @@ class InputGuard:
                     findings   = [pattern.pattern],
                 )
 
-        # 5. Strip inline code blocks
-        clean = re.sub(r"```[\s\S]*?```", "[code block removed]", clean)
-
+        # Note: Code blocks are preserved intact in clean!
         return GuardResult(
             passed     = True,
             clean_text = clean,
