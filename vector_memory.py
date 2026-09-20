@@ -113,17 +113,21 @@ def embed(text: str) -> List[float]:
     return _get_embedder().encode(text, normalize_embeddings=True).tolist()
 
 
-def save_memory(role: str, content: str, session_id: str = "default") -> None:
+def save_memory(role: str, content: str, session_id: str) -> None:
     """
     Persist a single conversation turn to Qdrant Cloud.
     ── SECURITY: content is passed through MemoryGuard before storing.
     PII is redacted and a flag is stored in the payload.
+    Requires a non-empty, session-isolated session_id.
     """
+    if not session_id or not session_id.strip():
+        print("[VectorMemory] Refusing to save memory without a valid session_id.")
+        return
     if not content or not content.strip():
         return
     try:
         # ── Security: sanitise before saving ──────────────────────
-        from security_guard import memory_guard, audit_logger
+        from security_guard import memory_guard, audit_logger, mask_session_id
         guard_result = memory_guard.validate(content)
         safe_content = guard_result.clean_text
 
@@ -148,30 +152,32 @@ def save_memory(role: str, content: str, session_id: str = "default") -> None:
                     payload={
                         "role":         role,
                         "content":      safe_content,
-                        "session_id":   session_id,
+                        "session_id":   session_id.strip(),
                         "timestamp":    datetime.utcnow().isoformat(),
                         "pii_redacted": guard_result.event_type == "MEMORY_REDACTED",
                     },
                 )
             ],
         )
-        print(f"[VectorMemory] Saved {role} message for session '{session_id}'.")
+        print(f"[VectorMemory] Saved {role} message for session '{mask_session_id(session_id)}'.")
     except Exception as e:
         print(f"[VectorMemory] Warning — could not save memory: {e}")
 
 
 def retrieve_relevant_memory(
     query: str,
-    session_id: str = "default",
+    session_id: str,
     top_k: int = TOP_K,
     score_threshold: float = SCORE_THRESHOLD,
 ) -> str:
-    """Search Qdrant Cloud for semantically relevant past messages."""
+    """Search Qdrant Cloud for semantically relevant past messages strictly for session_id."""
+    if not session_id or not session_id.strip():
+        return ""
     try:
         client    = _get_client()
         query_vec = embed(query)
         search_filter = Filter(
-            must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
+            must=[FieldCondition(key="session_id", match=MatchValue(value=session_id.strip()))]
         )
         results = client.search(
             collection_name=COLLECTION_NAME,
@@ -196,29 +202,35 @@ def retrieve_relevant_memory(
         return ""
 
 
-def clear_memory(session_id: str = "default") -> None:
-    """Delete all memory entries for a given session."""
+def clear_memory(session_id: str) -> None:
+    """Delete all memory entries strictly for a given session."""
+    if not session_id or not session_id.strip():
+        print("[VectorMemory] Refusing to clear memory without a valid session_id.")
+        return
     try:
+        from security_guard import mask_session_id
         client = _get_client()
         client.delete(
             collection_name=COLLECTION_NAME,
             points_selector=Filter(
-                must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
+                must=[FieldCondition(key="session_id", match=MatchValue(value=session_id.strip()))]
             ),
         )
-        print(f"[VectorMemory] Cleared cloud memory for session '{session_id}'.")
+        print(f"[VectorMemory] Cleared cloud memory for session '{mask_session_id(session_id)}'.")
     except Exception as e:
         print(f"[VectorMemory] Warning — could not clear memory: {e}")
 
 
-def get_memory_count(session_id: str = "default") -> int:
+def get_memory_count(session_id: str) -> int:
     """Returns number of memories stored for a session."""
+    if not session_id or not session_id.strip():
+        return 0
     try:
         client = _get_client()
         count_result = client.count(
             collection_name=COLLECTION_NAME,
             count_filter=Filter(
-                must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
+                must=[FieldCondition(key="session_id", match=MatchValue(value=session_id.strip()))]
             ),
             exact=True,
         )
@@ -228,19 +240,22 @@ def get_memory_count(session_id: str = "default") -> int:
         return 0
 
 
-def get_all_memories(session_id: str = "default") -> List[Dict[str, Any]]:
+def get_all_memories(session_id: str) -> List[Dict[str, Any]]:
     """
     Fetch ALL stored messages for a session from Qdrant, sorted by timestamp ascending.
     Returns a list of payload dicts: {role, content, session_id, timestamp}
     Uses scroll (not search) so no query vector needed — fetches everything.
     """
+    if not session_id or not session_id.strip():
+        return []
     try:
+        from security_guard import mask_session_id
         client  = _get_client()
         results = []
         offset  = None
 
         session_filter = Filter(
-            must=[FieldCondition(key="session_id", match=MatchValue(value=session_id))]
+            must=[FieldCondition(key="session_id", match=MatchValue(value=session_id.strip()))]
         )
 
         while True:

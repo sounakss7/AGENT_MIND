@@ -16,6 +16,7 @@ import re
 import hashlib
 import uuid
 import logging
+import secrets
 from datetime import datetime, date
 from typing import Optional
 
@@ -28,21 +29,80 @@ VECTOR_DIM       = 384
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. HASHED SESSION IDENTITY
+# 1. HASHED SESSION IDENTITY & CRYPTOGRAPHIC DERIVATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-def make_session_id(name: str, pin: str = "") -> str:
+def get_auth_pepper() -> str:
     """
-    Produce a short, stable SHA-256 hash from (name + pin).
+    Retrieve server-side pepper from Streamlit secrets or environment.
+    Falls back to a default pepper if not configured.
+    """
+    try:
+        import streamlit as st
+        pepper = st.secrets.get("AUTH_PEPPER")
+        if pepper:
+            return str(pepper)
+    except Exception:
+        pass
+    import os
+    return os.environ.get("AUTH_PEPPER", "default_pepper_salt_neuroplexa_2024")
+
+
+def make_session_id(name: str, pin: str, pepper: Optional[str] = None) -> str:
+    """
+    Produce a deterministic, secure account ID using scrypt from (name + PIN + pepper).
 
     Properties:
-      • Same name + PIN on ANY device  →  identical session_id.
-      • No PII stored anywhere; only the hash reaches Qdrant.
-      • Without PIN: plain lowercase name (backward-compatible).
-      • With PIN: SHA-256 makes brute-force practically infeasible.
+      • PIN >= 6 characters enforced.
+      • Incorporates server-side pepper and normalized name into salt.
+      • Uses standard scrypt parameters (N=16384, r=8, p=1).
+      • Returns account ID prefixed with 'acct_'.
     """
-    raw = f"{name.strip().lower()}:{pin.strip()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+    clean_name = name.strip().lower()
+    clean_pin  = pin.strip()
+
+    if not clean_name:
+        raise ValueError("Name cannot be empty.")
+    if len(clean_pin) < 6:
+        raise ValueError("PIN must be at least 6 characters.")
+
+    if pepper is None:
+        pepper = get_auth_pepper()
+
+    salt = f"{pepper}:{clean_name}".encode("utf-8")
+    derived = hashlib.scrypt(
+        password=clean_pin.encode("utf-8"),
+        salt=salt,
+        n=16384,
+        r=8,
+        p=1,
+        dklen=32,
+    ).hex()
+
+    return f"acct_{derived[:32]}"
+
+
+def generate_ephemeral_id() -> str:
+    """Generate a 128-bit random ID for unidentified visitors."""
+    return f"dev_{secrets.token_urlsafe(16)}"
+
+
+def mask_session_id(sid: str) -> str:
+    """
+    Produce a safe, masked label for UI display without leaking
+    raw session IDs, tokens, or plaintext user names.
+    """
+    if not sid:
+        return "usr_unknown"
+    if sid.startswith("acct_"):
+        tail = sid[-4:] if len(sid) >= 9 else sid[5:]
+        return f"acct_***{tail}"
+    if sid.startswith("dev_"):
+        tail = sid[-4:] if len(sid) >= 8 else sid[4:]
+        return f"dev_***{tail}"
+    # For legacy or plain string IDs, never expose plaintext:
+    short_hash = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:4]
+    return f"usr_***{short_hash}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -366,7 +426,7 @@ class AuditLogger:
             detail: str = "", findings: list = None) -> None:
         """Write one security event to Qdrant."""
         severity = self._SEVERITY_MAP.get(event_type, "INFO")
-        print(f"[AUDIT] {severity} | {event_type} | {session_id[:16]} | {detail[:80]}")
+        print(f"[AUDIT] {severity} | {event_type} | {mask_session_id(session_id)} | {detail[:80]}")
 
         client = self._get_client()
         if client is None:
@@ -426,9 +486,13 @@ class AuditLogger:
             logging.warning(f"[AuditLogger] Could not fetch events: {e}")
             return []
 
-    def get_stats(self) -> dict:
-        """Aggregate counts used by the Security Dashboard."""
-        events = self.get_events(limit=1000)
+    def get_stats(self, session_id: Optional[str] = None) -> dict:
+        """
+        Aggregate counts used by the Security Dashboard.
+        If session_id is provided, returns statistics scoped exclusively to that session.
+        If session_id is None, returns global statistics across all sessions (admin only).
+        """
+        events = self.get_events(session_id=session_id, limit=1000)
         today  = str(date.today())
         stats  = {
             "total":            len(events),

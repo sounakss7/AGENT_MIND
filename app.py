@@ -34,6 +34,8 @@ from security_guard import (
     memory_guard,
     audit_logger,
     make_session_id,
+    generate_ephemeral_id,
+    mask_session_id,
 )
 
 # =================================================================================
@@ -41,37 +43,27 @@ from security_guard import (
 # =================================================================================
 st.set_page_config(page_title="🤖 Neuroplexa AI", page_icon="🧠", layout="wide")
 
-# =================================================================================
-# SESSION ID — CROSS-DEVICE PERSISTENT
-# =================================================================================
-components.html(
-    """
-    <script>
-        let userId = localStorage.getItem("neuroplexa_user_id");
-        if (!userId) {
-            userId = "user_" + Math.random().toString(36).substr(2, 12);
-            localStorage.setItem("neuroplexa_user_id", userId);
-        }
-        const url = new URL(window.parent.location.href);
-        if (url.searchParams.get("uid") !== userId) {
-            url.searchParams.set("uid", userId);
-            window.parent.location.href = url.toString();
-        }
-    </script>
-    """,
-    height=0,
-)
+def is_admin() -> bool:
+    """Check if the current environment has administrative privileges enabled."""
+    try:
+        return bool(st.secrets.get("ADMIN", False))
+    except Exception:
+        return False
 
-query_params = st.query_params
-auto_uid     = query_params.get("uid", "")
-
+# =================================================================================
+# SESSION ID — PRIVATE EPHEMERAL DEFAULT (NO URL / IFRAME LEAKS)
+# =================================================================================
 if "session_id" not in st.session_state:
-    st.session_state.session_id = auto_uid if auto_uid else "default_user"
-elif auto_uid and auto_uid != "default_user" and st.session_state.session_id == "default_user":
-    st.session_state.session_id = auto_uid
+    st.session_state.session_id = generate_ephemeral_id()
 
 if "manual_name_set" not in st.session_state:
     st.session_state.manual_name_set = False
+
+if "auth_attempts" not in st.session_state:
+    st.session_state.auth_attempts = 0
+
+if "auth_lockout_until" not in st.session_state:
+    st.session_state.auth_lockout_until = 0.0
 
 SESSION_ID = st.session_state.session_id
 
@@ -282,7 +274,7 @@ def detect_tool(content: str) -> tuple[str, str]:
 def render_history_tab():
     SESSION_ID = st.session_state.session_id
     st.markdown("## 📜 Chat History Browser")
-    st.caption(f"Showing all past conversations for memory ID: `{SESSION_ID}`")
+    st.caption(f"Showing all past conversations for memory ID: `{mask_session_id(SESSION_ID)}`")
 
     col_r, col_s, _ = st.columns([1, 1, 6])
     with col_r:
@@ -389,24 +381,42 @@ def render_security_tab():
     st.caption("Real-time audit log of all security events for your session.")
 
     SESSION_ID = st.session_state.session_id
+    admin_mode = is_admin()
 
     col_r, _ = st.columns([1, 7])
     with col_r:
         if st.button("🔄 Refresh Events", use_container_width=True):
-            if "audit_cache" in st.session_state:
-                del st.session_state["audit_cache"]
+            for k in ["audit_cache", "audit_cache_my", "audit_cache_all"]:
+                if k in st.session_state:
+                    del st.session_state[k]
             st.rerun()
 
-    # Load audit events (cached per session)
-    if "audit_cache" not in st.session_state:
-        with st.spinner("Loading security events from Qdrant..."):
-            st.session_state.audit_cache = audit_logger.get_events(limit=500)
+    # Scope selection: only administrators can view all sessions
+    if admin_mode:
+        col_s1, _ = st.columns([2, 5])
+        with col_s1:
+            scope = st.radio(
+                "Scope (Admin):", ["My session only", "All sessions"],
+                horizontal=True, key="audit_scope",
+            )
+    else:
+        scope = "My session only"
 
-    all_events = st.session_state.audit_cache
-    my_events  = [e for e in all_events if e.get("session_id") == SESSION_ID]
+    # Load audit events based on permission and scope
+    if scope == "All sessions" and admin_mode:
+        if "audit_cache_all" not in st.session_state:
+            with st.spinner("Loading all security events from Qdrant..."):
+                st.session_state.audit_cache_all = audit_logger.get_events(limit=500)
+        events_pool = st.session_state.audit_cache_all
+        stats = audit_logger.get_stats()
+    else:
+        if "audit_cache_my" not in st.session_state:
+            with st.spinner("Loading your session events from Qdrant..."):
+                st.session_state.audit_cache_my = audit_logger.get_events(session_id=SESSION_ID, limit=500)
+        events_pool = st.session_state.audit_cache_my
+        stats = audit_logger.get_stats(session_id=SESSION_ID)
 
-    # Summary metrics
-    stats = audit_logger.get_stats()
+    # Summary metrics (strictly scoped)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("🔍 Total Events",       stats["total"])
     c2.metric("✅ INFO",               stats["by_severity"].get("INFO",  0))
@@ -427,19 +437,12 @@ def render_security_tab():
     st.markdown("---")
 
     # Filter controls
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        scope = st.radio(
-            "Show events for:", ["My session only", "All sessions"],
-            horizontal=True, key="audit_scope",
-        )
-    with col_f2:
-        sev_filter = st.multiselect(
-            "Filter by severity:", ["INFO", "WARN", "BLOCK"],
-            default=["WARN", "BLOCK"], key="audit_sev",
-        )
+    sev_filter = st.multiselect(
+        "Filter by severity:", ["INFO", "WARN", "BLOCK"],
+        default=["WARN", "BLOCK"], key="audit_sev",
+    )
 
-    events_to_show = my_events if scope == "My session only" else all_events
+    events_to_show = events_pool
     if sev_filter:
         events_to_show = [e for e in events_to_show if e.get("severity") in sev_filter]
 
@@ -453,13 +456,14 @@ def render_security_tab():
     SEVERITY_ICONS = {"INFO": "🟢", "WARN": "🟡", "BLOCK": "🔴"}
 
     for evt in events_to_show[:100]:
-        sev    = evt.get("severity",   "INFO")
-        etype  = evt.get("event_type", "UNKNOWN")
-        ts     = evt.get("timestamp",  "")[:19].replace("T", " ")
-        sid    = evt.get("session_id", "")[:16]
-        icon   = SEVERITY_ICONS.get(sev, "⚪")
-        detail = evt.get("detail",   "")
-        finds  = evt.get("findings", [])
+        sev     = evt.get("severity",   "INFO")
+        etype   = evt.get("event_type", "UNKNOWN")
+        ts      = evt.get("timestamp",  "")[:19].replace("T", " ")
+        raw_sid = evt.get("session_id", "")
+        sid     = mask_session_id(raw_sid)
+        icon    = SEVERITY_ICONS.get(sev, "⚪")
+        detail  = evt.get("detail",   "")
+        finds   = evt.get("findings", [])
 
         with st.expander(f"{icon} `{etype}`  |  {ts}  |  session: `{sid}`", expanded=False):
             col_a, col_b = st.columns(2)
@@ -486,48 +490,76 @@ with st.sidebar:
     st.markdown("### 👤 Your Memory Identity")
     st.caption("Same name + PIN = same memories on ANY device.")
 
+    now = time.time()
+    is_locked = now < st.session_state.get("auth_lockout_until", 0.0)
+    if is_locked:
+        remaining = int(st.session_state["auth_lockout_until"] - now)
+        st.error(f"⛔ Too many failed attempts. Locked out for {remaining}s.")
+
     name_input = st.text_input(
         "Enter your name:",
         placeholder="e.g. sounak",
-        value="" if not st.session_state.manual_name_set else st.session_state.session_id,
+        value="" if not st.session_state.manual_name_set else st.session_state.get("display_name", ""),
         key="name_input_field",
     )
     pin_input = st.text_input(
-        "PIN (optional):",
-        placeholder="e.g. 1234",
+        "PIN (min 6 chars):",
+        placeholder="e.g. 123456",
         type="password",
         key="pin_input_field",
-        max_chars=8,
-        help="A PIN makes your memory ID impossible to guess even if someone knows your name.",
+        max_chars=32,
+        help="A PIN (min 6 chars) is combined with your name and pepper to derive your encrypted account ID.",
     )
 
     col_set, col_reset = st.columns(2)
     with col_set:
-        if st.button("✅ Set Name", use_container_width=True):
-            if name_input.strip():
-                if pin_input.strip():
-                    clean = make_session_id(name_input.strip(), pin_input.strip())
-                    st.success("🔐 Secure hashed ID set.")
+        if st.button("✅ Set Identity", use_container_width=True, disabled=is_locked):
+            if is_locked:
+                st.error("Authentication locked. Please wait for cooldown to expire.")
+            elif not name_input.strip():
+                st.session_state.auth_attempts += 1
+                if st.session_state.auth_attempts >= 5:
+                    st.session_state.auth_lockout_until = time.time() + 60.0
+                    st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
                 else:
-                    clean = name_input.strip().lower().replace(" ", "_")
-                    st.success(f"Memory ID: `{clean}`")
-
-                st.session_state.session_id      = clean
-                st.session_state.manual_name_set = True
-                for cache_key in ["history_cache", "audit_cache"]:
-                    if cache_key in st.session_state:
-                        del st.session_state[cache_key]
-                SESSION_ID = clean
-                audit_logger.log(SESSION_ID, "INPUT_PASSED", detail="Session ID set by user.")
-                st.rerun()
+                    st.warning("Please enter your name first.")
+            elif len(pin_input.strip()) < 6:
+                st.session_state.auth_attempts += 1
+                if st.session_state.auth_attempts >= 5:
+                    st.session_state.auth_lockout_until = time.time() + 60.0
+                    st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
+                else:
+                    remaining_attempts = 5 - st.session_state.auth_attempts
+                    st.warning(f"PIN must be at least 6 characters. ({remaining_attempts} attempts left)")
             else:
-                st.warning("Please enter a name first.")
+                try:
+                    clean = make_session_id(name_input.strip(), pin_input.strip())
+                    st.session_state.auth_attempts   = 0
+                    st.session_state.display_name    = name_input.strip()
+                    st.session_state.session_id      = clean
+                    st.session_state.manual_name_set = True
+                    for cache_key in ["history_cache", "audit_cache", "audit_cache_my", "audit_cache_all"]:
+                        if cache_key in st.session_state:
+                            del st.session_state[cache_key]
+                    SESSION_ID = clean
+                    audit_logger.log(SESSION_ID, "INPUT_PASSED", detail="Account session ID derived and set.")
+                    st.success("🔐 Secure account identity verified and set.")
+                    st.rerun()
+                except ValueError as ve:
+                    st.session_state.auth_attempts += 1
+                    if st.session_state.auth_attempts >= 5:
+                        st.session_state.auth_lockout_until = time.time() + 60.0
+                        st.error("⛔ Maximum 5 attempts reached. Locked out for 60 seconds.")
+                    else:
+                        st.error(str(ve))
 
     with col_reset:
         if st.button("🔄 Reset ID", use_container_width=True):
             st.session_state.manual_name_set = False
-            st.session_state.session_id      = auto_uid if auto_uid else "default_user"
-            for cache_key in ["history_cache", "audit_cache"]:
+            st.session_state.display_name    = ""
+            st.session_state.auth_attempts   = 0
+            st.session_state.session_id      = generate_ephemeral_id()
+            for cache_key in ["history_cache", "audit_cache", "audit_cache_my", "audit_cache_all"]:
                 if cache_key in st.session_state:
                     del st.session_state[cache_key]
             SESSION_ID = st.session_state.session_id
@@ -535,7 +567,7 @@ with st.sidebar:
 
     mem_count = get_memory_count(SESSION_ID)
     st.metric("🧠 Memories stored", mem_count)
-    st.caption(f"🔑 Memory ID: `{SESSION_ID[:20]}{'…' if len(SESSION_ID) > 20 else ''}`")
+    st.caption(f"🔑 Memory ID: `{mask_session_id(SESSION_ID)}`")
 
     # ── Security status ───────────────────────────────────────────
     st.markdown("---")
@@ -571,7 +603,7 @@ with st.sidebar:
     st.header("🧭 Utilities")
     if st.button("🗑️ Clear Chat History & Reset Metrics"):
         clear_memory(session_id=SESSION_ID)
-        for cache_key in ["history_cache", "audit_cache"]:
+        for cache_key in ["history_cache", "audit_cache", "audit_cache_my", "audit_cache_all"]:
             if cache_key in st.session_state:
                 del st.session_state[cache_key]
         st.session_state.messages        = []
