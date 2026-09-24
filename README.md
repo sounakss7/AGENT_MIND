@@ -84,8 +84,8 @@ flowchart TD
 Neuroplexa AI orchestrates complex reasoning tasks through **LangGraph**, treating the LLM not just as a text generator, but as a reasoning engine with access to state and tools.
 
 ### 1. The Processing Pipeline
-1. **Ingestion & Security Scan:** The user prompt is ingested and passed through `MemoryGuard` and `EvaluationGuardrail`. PII (Credit Cards via Luhn algorithm, IPv4 addresses, etc.) is redacted before leaving the local machine.
-2. **Intent Classification (Router):** The `SelfRouter` parses the text. If it matches a tool (e.g., Image Generation, Web Search), it routes directly. Otherwise, it defaults to the conversational reasoning chain.
+1. **Ingestion & Security Scan:** The user prompt is ingested and passed through `MemoryGuard` and `EvaluationGuardrail`. PII is redacted before leaving the local machine.
+2. **Intent Classification (Router):** The `SelfRouter` parses the text. If it matches a tool, it routes directly. Otherwise, it defaults to the conversational reasoning chain.
 3. **Context Injection:** The system hashes the user's `Name + PIN` to generate a secure Session ID. It queries **Qdrant Cloud** to fetch the top-3 most semantically relevant historical conversations.
 4. **Execution:** The selected LLM (via Groq, Gemini, DeepSeek, or Kimi) executes the query using the injected context.
 5. **Memory Distillation:** The final output is summarized (distilled) by the LLM to extract key facts, reducing token bloat, and the dense summary is embedded via `sentence-transformers` and saved back to Qdrant.
@@ -109,44 +109,87 @@ Standard chatbots suffer from context-window amnesia. Neuroplexa utilizes an adv
 ### ⚔️ 3. LLM Arena & Blind Evaluation (MoA)
 Inspired by the Mixture of Agents (MoA) architecture, Neuroplexa guarantees top-tier outputs through competition:
 *   **Contender A vs. Contender B:** Two distinct models (e.g., DeepSeek vs Kimi) process the exact same query in parallel.
-*   **LLM-as-a-Judge:** A neutral third model (default: Mistral `open-mistral-7b` with a Gemini fallback) is fed both responses *blindly* (Model A and Model B).
+*   **LLM-as-a-Judge:** A neutral third model (default: Mistral `open-mistral-7b` with a Gemini fallback) is fed both responses *blindly*.
 *   **Multi-Dimensional Rubric:** The judge outputs a strict JSON evaluation scoring Correctness, Safety, and Clarity.
 *   **Human-in-the-Loop:** A manual override button (`Promote this response as winner`) allows the human operator to disagree with the Judge and force the system to memorize the human-preferred response.
 
 ### 🛡️ 4. Enterprise-Grade Guardrails & Security
-*   **PII Redaction Engine:** Automatically detects and masks sensitive data using regex and checksum validation (e.g., validating Credit Cards via the Luhn algorithm before masking).
-*   **Jailbreak Defense:** Proactively blocks known attack vectors, including "DAN" (Do Anything Now) prompts and developer-mode exploits.
-*   **Audit Logger:** Every system event, rate limit, and security violation is logged immutably into a dedicated Qdrant `security_audit` collection for admin monitoring.
+A multi-layered defense-in-depth architecture intercepts and sanitizes data.
+
+| Component | Execution Point | Functionality |
+| :--- | :--- | :--- |
+| **`InputGuard`** | Pre-screens user queries before LLM routing | Blocks "DAN" (Do Anything Now) jailbreaks, prompt injections, and system prompt extraction attacks. |
+| **`OutputGuard`** | Pre-screens model output before UI rendering | • Auto-redacts PII & API keys (`[REDACTED:<TYPE>]`)<br>• Blocks harmful/toxic instructions |
+| **`MemoryGuard`** | Pre-screens data before vector embedding in Qdrant | Prevents sensitive keys, tokens, or PII from polluting vector memory. |
+| **`AuditLogger`** | Security telemetry tracking in Qdrant collection | Logs all events (`INFO`, `WARN`, `BLOCK`) with timestamps and pattern findings. |
+
+#### Auto-Redacted PII & Secret Signatures (Luhn Validated)
+```text
+• Email Addresses               • Aadhaar Numbers (India)
+• Phone Numbers (India & Intl)  • PAN Cards (India)
+• Credit / Debit Card Numbers   • Google API Keys (AIza...)
+• Groq API Keys (gsk_...)       • OpenAI API Keys (sk-...)
+• AWS Access Keys (AKIA...)     • GitHub Tokens (ghp_...)
+• IPv4 Addresses
+```
 
 ### 🛠️ 5. Multi-Modal Tool Ecosystem
 *   **Tavily Web Search:** Real-time data retrieval with automatic URL extraction.
-*   **File Analysis Pipeline:** A robust OCR and parsing pipeline supporting PDFs and Images via `PyPDF2`, `pymupdf`, and `pytesseract`. Includes a SHA-256 caching layer so identical files are never re-processed, saving CPU cycles.
+*   **File Analysis Pipeline:** A robust OCR and parsing pipeline supporting PDFs and Images via `PyPDF2`, `pymupdf`, and `pytesseract`. Includes a SHA-256 caching layer so identical files are never re-processed.
 *   **Image Generation:** Integrated Pollinations AI for instant, in-chat image rendering.
 
 ---
 
-## ⚙️ Technology Stack
+## 📊 Interactive UI & Dashboards
 
-| Component | Technology |
-| :--- | :--- |
-| **Frontend UI** | Streamlit |
-| **Agent Orchestration** | LangChain, LangGraph |
-| **Vector Database** | Qdrant Cloud |
-| **Embeddings (Local)** | HuggingFace `sentence-transformers` |
-| **LLMs Supported** | Groq (`gpt-oss-120b`, `20b`), Google Gemini, DeepSeek, Kimi, Mistral |
-| **Search API** | Tavily |
-| **CI/CD & Testing** | GitHub Actions, Pytest (100+ Tests) |
+The application is structured into three primary tabs:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                        🧠 Neuroplexa AI Workspace                      │
+├───────────────────────┬────────────────────────┬───────────────────────┤
+│        💬 Chat        │       📜 History       │      🔒 Security      │
+├───────────────────────┴────────────────────────┴───────────────────────┤
+│  • Streaming responses • Grouped by date        • Real-time threat log │
+│  • MoA Judged Output   • Keyword search         • Severity breakdowns  │
+│  • Audio TTS player    • 1-Click reload         • Injections blocked   │
+│  • Image generation    • Tool category badges   • Event distributions  │
+│  • Execution trace     • Message metrics        • Filterable audit log │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📁 Project Structure
+
+```text
+AGENT_MIND/
+├── .streamlit/
+│   ├── config.toml              # Streamlit theme & UI configurations
+│   └── secrets.toml             # API credentials & keys (Git-ignored)
+├── agent.py                     # LangGraph workflow, MoA judging, agent tools
+├── app.py                       # Main Streamlit application & interactive UI
+├── security_guard.py            # Zero-trust security guards, PII redaction, audit logging
+├── vector_memory.py             # Qdrant Cloud semantic memory & embedding pipeline
+├── packages.txt                 # OS-level dependencies (tesseract-ocr)
+├── requirements.txt             # Python dependencies
+└── README.md                    # Project documentation
+```
 
 ---
 
 ## 🚀 Setup & Installation Guide
 
-### Prerequisites
-*   Python 3.11 or 3.12
-*   Qdrant Cloud Account (Free tier)
-*   API Keys for your desired providers (Gemini, Groq, Mistral, DeepSeek, Kimi, Tavily)
+### 1. Prerequisites
+*   **Python:** Version `3.11` or `3.12`
+*   **Git:** Version `2.x`+
+*   **Tesseract OCR** *(Optional, required for OCR on scanned PDFs)*:
+    *   **Windows**: Download installer from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) and add to `PATH`.
+    *   **Linux**: `sudo apt-get install tesseract-ocr`
+    *   **macOS**: `brew install tesseract`
+*   **Qdrant Cloud Account** (Free tier)
 
-### 1. Clone & Install
+### 2. Clone & Install
 ```bash
 git clone https://github.com/yourusername/AGENT_MIND.git
 cd AGENT_MIND
@@ -156,31 +199,76 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Configure Secrets
-Streamlit requires API keys to be placed in a `.streamlit/secrets.toml` file.
+### 3. Configuration & Secrets Setup
+
+Neuroplexa AI reads API credentials securely from Streamlit Secrets or Environment Variables.
+Create a configuration file at `.streamlit/secrets.toml`:
+
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
-Open `.streamlit/secrets.toml` and fill in your keys. **Crucially, ensure your Qdrant URL and API Key are present for the memory system to function:**
+
+Edit `.streamlit/secrets.toml` to include your keys:
 ```toml
-QDRANT_URL = "https://your-cluster-url.qdrant.io"
-QDRANT_API_KEY = "your-qdrant-key"
-GOOGLE_API_KEY = "..."
-GROQ_API_KEY = "..."
-# Add Mistral, DeepSeek, and Kimi keys as well.
+# ── Primary LLM & Routing ─────────────────────────────────────
+GOOGLE_API_KEY = "your_google_gemini_api_key_here"
+
+# ── Mixture of Agents (MoA) Engines ───────────────────────────
+GROQ_API_KEY = "your_groq_api_key_here"
+MISTRAL_API_KEY = "your_mistral_api_key_here"
+DEEPSEEK_API_KEY = "your_deepseek_api_key_here"
+KIMI_API_KEY = "your_kimi_moonshot_api_key_here"
+
+# ── Multimodal & Web Intelligence Tools ────────────────────────
+TAVILY_API_KEY = "your_tavily_search_api_key_here"
+POLLINATIONS_TOKEN = "your_pollinations_api_token_here"
+
+# ── Vector Memory & Security Telemetry (Qdrant Cloud) ─────────
+QDRANT_URL = "https://your-cluster-id.region.qdrant.tech:6333"
+QDRANT_API_KEY = "your_qdrant_cloud_api_key_here"
+
+# ── Security & Authentication ─────────────────────────────────
+AUTH_PEPPER = "your-high-entropy-server-pepper-secret"
+ADMIN = false
 ```
 
-### 3. Run the Application
+### Obtaining Free API Keys:
+| Service | Purpose | URL |
+| :--- | :--- | :--- |
+| **Google AI Studio** | Gemini Flash Routing & Fallback Judge | [aistudio.google.com](https://aistudio.google.com/) |
+| **Groq Cloud** | High-speed GPT-OSS 120B/20B inference | [console.groq.com](https://console.groq.com/) |
+| **DeepSeek** | Powerful open-weight reasoning model | [platform.deepseek.com](https://platform.deepseek.com/) |
+| **Kimi (Moonshot)** | Deep context window language model | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| **Mistral AI** | Impartial MoA Judge Model | [console.mistral.ai](https://console.mistral.ai/) |
+| **Tavily AI** | Deep search web retrieval | [tavily.com](https://tavily.com/) |
+| **Qdrant Cloud** | Managed vector database (1GB free tier) | [cloud.qdrant.io](https://cloud.qdrant.io/) |
+
+### 4. Run the Application
+Launch the dashboard:
 ```bash
 streamlit run app.py
 ```
 *Navigate to `http://localhost:8501` in your browser.*
 
-### 4. Run the Test Suite
+### 5. Run the Test Suite
 Neuroplexa AI is covered by a massive suite of over 101 unit and integration tests verifying memory consistency, guardrail accuracy, and routing latency.
 ```bash
 python -m pytest tests/ -v
 ```
+
+---
+
+## ⚙️ Technology Stack
+
+| Category | Technology |
+| :--- | :--- |
+| **Frontend UI** | Streamlit |
+| **Agent Orchestration** | LangChain, LangGraph |
+| **Vector Database** | Qdrant Cloud |
+| **Embeddings (Local)** | HuggingFace `sentence-transformers` |
+| **LLMs Supported** | Groq (`gpt-oss-120b`, `20b`), Google Gemini, DeepSeek, Kimi, Mistral |
+| **Search API** | Tavily |
+| **CI/CD & Testing** | GitHub Actions, Pytest (101 Tests) |
 
 ---
 
