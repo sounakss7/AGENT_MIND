@@ -13,7 +13,7 @@ jobs:
   test:
     name: Run Pytest Suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -28,12 +28,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install Test Dependencies
+        # Only pytest + pytest-mock needed:
+        # tests/conftest.py mocks all heavy packages (langchain, langgraph,
+        # qdrant-client, sentence-transformers, streamlit, requests, PIL, etc.)
+        # so none of those need to be installed in CI.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install pytest pytest-mock
 
       - name: Run Test Suite
