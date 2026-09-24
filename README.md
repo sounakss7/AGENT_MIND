@@ -47,59 +47,59 @@ The following sequence details how Neuroplexa AI processes user queries from raw
 
 ```mermaid
 flowchart TD
-    User((User Ingestion)) --> UI[Streamlit Workspace]
-    UI --> Guardrails{Zero-Trust Guardrails\nInputGuard & PII}
+    User(("User Ingestion")) --> UI["Streamlit Workspace"]
+    UI --> Guardrails{"Zero-Trust Guardrails<br/>InputGuard and PII"}
 
-    Guardrails -- Violates Policy --> SecLog[Block & Emit Security Audit Log]
-    SecLog --> AuditDB[(Qdrant: security_audit)]
-    Guardrails -- Sanitized Clean --> Router{Dual-Mode Router}
+    Guardrails -- "Violates Policy" --> SecLog["Block and Emit Security Log"]
+    SecLog --> AuditDB[("Qdrant Security Audit")]
+    Guardrails -- "Sanitized Clean" --> Router{"Dual-Mode Router"}
 
-    subgraph "Routing Engine (Patented)"
-        Router -- "0.1ms Deterministic" --> SelfRouter[SelfRouter Automata]
-        Router -- "Ambiguous Semantic" --> LLMRouter[LLM Router Engine]
+    subgraph RoutingEngine ["Routing Engine - Patented"]
+        Router -- "0.1ms Deterministic" --> SelfRouter["SelfRouter Automata"]
+        Router -- "Ambiguous Semantic" --> LLMRouter["LLM Router Engine"]
     end
 
-    SelfRouter --> MemoryEngine[Identity-Scoped Context Retrieval]
+    SelfRouter --> MemoryEngine["Identity-Scoped Context Retrieval"]
     LLMRouter --> MemoryEngine
 
-    subgraph "Vector Engine (Qdrant Cloud)"
-        MemoryEngine <--> KeyHasher[HMAC-SHA256 Identity Scoper]
-        KeyHasher <--> Qdrant[(Qdrant Cloud: agent_mind_memory)]
-        Qdrant -.-> EmbeddingModel[sentence-transformers/all-MiniLM-L6-v2]
+    subgraph VectorEngine ["Vector Engine - Qdrant Cloud"]
+        MemoryEngine <--> KeyHasher["HMAC-SHA256 Identity Scoper"]
+        KeyHasher <--> Qdrant[("Qdrant Cloud Memory Collection")]
+        Qdrant -.-> EmbeddingModel["sentence-transformers all-MiniLM-L6-v2"]
     end
 
-    MemoryEngine --> ExecutionPath{Execution Routing}
+    MemoryEngine --> ExecutionPath{"Execution Routing"}
 
-    subgraph "Multi-Modal Execution & Tool Ecosystem"
-        ExecutionPath -- "Search Intent" --> Tavily[Tavily Search API]
-        ExecutionPath -- "Image Intent" --> Pollinations[Pollinations AI Synthesis]
-        ExecutionPath -- "Document/PDF" --> OCR[PyMuPDF + Tesseract OCR]
-        ExecutionPath -- "Standard Prompt" --> PrimaryLLM[Groq / Gemini / DeepSeek / Kimi]
+    subgraph ToolsEcosystem ["Multi-Modal Execution and Tool Ecosystem"]
+        ExecutionPath -- "Search Intent" --> Tavily["Tavily Search API"]
+        ExecutionPath -- "Image Intent" --> Pollinations["Pollinations AI Synthesis"]
+        ExecutionPath -- "Document or PDF" --> OCR["PyMuPDF and Tesseract OCR"]
+        ExecutionPath -- "Standard Prompt" --> PrimaryLLM["Frontier LLMs: Groq, Gemini, DeepSeek, Kimi"]
         OCR --> PrimaryLLM
     end
 
-    ExecutionPath -- "Arena A/B Mode" --> ArenaSplit{Model Arena Dispatcher}
+    ExecutionPath -- "Arena A-B Mode" --> ArenaSplit{"Model Arena Dispatcher"}
 
-    subgraph "Mixture of Agents (MoA) Arena"
-        ArenaSplit --> ContenderA[Contender A\n(e.g., DeepSeek-V3)]
-        ArenaSplit --> ContenderB[Contender B\n(e.g., Kimi / Groq)]
-        ContenderA --> BlindJudge[Mistral Impartial Judge]
+    subgraph MoAArena ["Mixture of Agents Arena"]
+        ArenaSplit --> ContenderA["Contender A: DeepSeek-V3"]
+        ArenaSplit --> ContenderB["Contender B: Kimi or Groq"]
+        ContenderA --> BlindJudge["Mistral Impartial Judge"]
         ContenderB --> BlindJudge
-        BlindJudge --> JudgeVerdict[JSON Evaluation Verdict]
-        JudgeVerdict -. "Human Disagreement" .-> HITL[Human-in-the-Loop Override]
+        BlindJudge --> JudgeVerdict["JSON Evaluation Verdict"]
+        JudgeVerdict -. "Human Disagreement" .-> HITL["Human-in-the-Loop Override"]
     end
 
-    PrimaryLLM --> OutputGate((Output Synthesis))
+    PrimaryLLM --> OutputGate(("Output Synthesis"))
     Tavily --> OutputGate
     Pollinations --> OutputGate
     JudgeVerdict --> OutputGate
     HITL --> OutputGate
 
-    OutputGate --> OutputGuard{OutputGuard & Sanitizer}
-    OutputGuard --> UIResponse[Render Response in UI]
+    OutputGate --> OutputGuard{"OutputGuard and Sanitizer"}
+    OutputGuard --> UIResponse["Render Response in UI"]
 
-    OutputGuard --> DistillAgent[Memory Distillation Worker]
-    DistillAgent -->|Extract Core Knowledge| Qdrant
+    OutputGuard --> DistillAgent["Memory Distillation Worker"]
+    DistillAgent --> Qdrant
 ```
 
 ---
