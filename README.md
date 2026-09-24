@@ -30,6 +30,57 @@ The architecture underlying Neuroplexa AI includes proprietary, patented (or pat
 
 ## 🏗️ Deep Dive: System Architecture & Data Flow
 
+```mermaid
+flowchart TD
+    User((User Input)) --> UI[Streamlit UI]
+    UI --> Guardrails{Security Guardrails\n(PII & Jailbreaks)}
+
+    Guardrails -- Blocked --> Reject[Block & Log]
+    Guardrails -- Passed --> Router{Intent Routing}
+
+    subgraph "Routing Engine"
+        Router -- "< 0.1ms (RegEx)" --> SelfRouter[Self-Router]
+        Router -- "Fallback" --> LLMRouter[LLM Router]
+    end
+
+    SelfRouter --> Memory[Semantic Memory Retrieval]
+    LLMRouter --> Memory
+
+    subgraph "Vector DB (Identity Scoped)"
+        Memory <--> Qdrant[(Qdrant Cloud)]
+        Qdrant -.-> Embeddings[sentence-transformers]
+    end
+
+    Memory --> Execution{Execution Pathway}
+
+    subgraph "Tools & Pipeline"
+        Execution -- "Web Search" --> Tavily[Tavily API]
+        Execution -- "Image Gen" --> Pollinations[Pollinations AI]
+        Execution -- "File/PDF" --> OCR[OCR Pipeline]
+        Execution -- "Standard" --> SingleLLM[Main LLM]
+        OCR --> SingleLLM
+    end
+
+    Execution -- "Arena Mode" --> Arena{Model Arena\n(A/B Testing)}
+
+    subgraph "Mixture of Agents (MoA)"
+        Arena --> ModelA[Contender A\n(e.g., DeepSeek)]
+        Arena --> ModelB[Contender B\n(e.g., Kimi)]
+        ModelA --> Judge[Mistral Judge]
+        ModelB --> Judge
+        Judge -. "Manual Override" .-> Human[Human-in-the-Loop]
+    end
+
+    SingleLLM --> Output((Final Output))
+    Tavily --> Output
+    Pollinations --> Output
+    Judge --> Output
+    Human --> Output
+
+    Output --> Distillation[Memory Distillation\n(Summarization)]
+    Distillation --> Qdrant
+```
+
 Neuroplexa AI orchestrates complex reasoning tasks through **LangGraph**, treating the LLM not just as a text generator, but as a reasoning engine with access to state and tools.
 
 ### 1. The Processing Pipeline
