@@ -36,11 +36,11 @@ def test_requirements_txt_clean_and_no_duplicates():
 
     # Verify pinned framework stack is strictly preserved
     raw_text = req_path.read_text(encoding="utf-8")
-    assert "langchain==0.1.17" in raw_text
-    assert "langchain-core==0.1.52" in raw_text
-    assert "langchain-google-genai==0.0.11" in raw_text
-    assert "langchain-openai==0.1.7" in raw_text
-    assert "langgraph==0.0.30" in raw_text
+    assert "langchain==0.2.16" in raw_text
+    assert "langchain-core==0.2.38" in raw_text
+    assert "langchain-google-genai==1.0.10" in raw_text
+    assert "langchain-openai==0.1.25" in raw_text
+    assert "langgraph==0.2.28" in raw_text
     assert "qdrant-client==1.9.1" in raw_text
 
     # Verify unused bloat packages were removed

@@ -60,25 +60,25 @@ MODEL_BENCHMARKS = {
         "context": "1,000,000 tokens",
         "best_for": "Multimodal tasks, ultra-long context (1M), and rapid reasoning.",
     },
-    "Groq Llama-3.3 70B": {
-        "provider": "Meta / Groq",
-        "mmlu": "86.9%",
-        "math": "68.0%",
-        "humaneval": "81.7%",
-        "speed": "~280 tokens/sec",
+    "Groq GPT-OSS 120B": {
+        "provider": "OpenAI / Groq",
+        "mmlu": "87.5%",
+        "math": "69.0%",
+        "humaneval": "82.0%",
+        "speed": "~250 tokens/sec",
         "throughput": "Ultra-fast LPU",
         "context": "128,000 tokens",
-        "best_for": "High-complexity reasoning, coding, and instantaneous generation.",
+        "best_for": "High-complexity reasoning, coding, and high-speed large-scale generation.",
     },
-    "Groq Llama-3.1 8B": {
-        "provider": "Meta / Groq",
-        "mmlu": "73.0%",
-        "math": "51.0%",
-        "humaneval": "62.2%",
-        "speed": "~850 tokens/sec",
+    "Groq GPT-OSS 20B": {
+        "provider": "OpenAI / Groq",
+        "mmlu": "75.0%",
+        "math": "54.0%",
+        "humaneval": "65.0%",
+        "speed": "~800 tokens/sec",
         "throughput": "Hyper-speed LPU",
         "context": "128,000 tokens",
-        "best_for": "Real-time responses, low-latency chats, and concise answers.",
+        "best_for": "Real-time fast responses, low-latency chat, and concise answers.",
     },
     "DeepSeek V3 (Chat)": {
         "provider": "DeepSeek",
@@ -128,6 +128,14 @@ def format_history(history: List[BaseMessage]) -> str:
     return formatted
 
 
+# Groq deprecated llama-3.3-70b-versatile and llama-3.1-8b-instant on Aug 16 2026.
+# New recommended production models:
+#   Large/Complex tasks: openai/gpt-oss-120b  (replaces llama-3.3-70b-versatile)
+#   Fast/Simple tasks:   openai/gpt-oss-20b   (replaces llama-3.1-8b-instant)
+GROQ_MODEL_LARGE = "openai/gpt-oss-120b"
+GROQ_MODEL_FAST  = "openai/gpt-oss-20b"
+
+
 def choose_groq_model(prompt: str) -> str:
     """Selects the best Groq model based on the complexity of the prompt."""
     p = prompt.lower()
@@ -135,15 +143,15 @@ def choose_groq_model(prompt: str) -> str:
                              "information", "analysis", "solution", "nlp", "essay",
                              "mathematics", "research", "reasoning", "benchmark", "derive",
                              "explain", "thermodynamics", "physics"]):
-        return "llama-3.3-70b-versatile"
+        return GROQ_MODEL_LARGE   # openai/gpt-oss-120b
     else:
-        return "llama-3.1-8b-instant"
+        return GROQ_MODEL_FAST    # openai/gpt-oss-20b
 
 
 def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: int = 30, preferred_model: Optional[str] = None):
     """
     Queries the Groq API with retries, exponential backoff, and automatic fallback.
-    Falls back from llama-3.3-70b-versatile to llama-3.1-8b-instant on rate limits or errors.
+    Falls back from openai/gpt-oss-120b -> openai/gpt-oss-20b on rate limits or errors.
     Returns a dict with 'model_name' and either 'content' or 'error'.
     """
     if not groq_api_key:
@@ -151,8 +159,8 @@ def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: in
 
     primary_model = preferred_model or choose_groq_model(prompt)
     candidate_models = [primary_model]
-    if primary_model != "llama-3.1-8b-instant":
-        candidate_models.append("llama-3.1-8b-instant")
+    if primary_model != GROQ_MODEL_FAST:
+        candidate_models.append(GROQ_MODEL_FAST)
 
     headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
     last_error = "Groq API exceeded max retries."
@@ -623,8 +631,8 @@ Instructions:
             else:
                 judgment = "Error: Gemini API key not configured."
         elif judge_type == "groq":
-            judge_source = "Groq Llama-3.3 70B"
-            groq_judge_res = query_groq(judge_prompt, groq_api_key, preferred_model="llama-3.3-70b-versatile")
+            judge_source = f"Groq {GROQ_MODEL_LARGE}"
+            groq_judge_res = query_groq(judge_prompt, groq_api_key, preferred_model=GROQ_MODEL_LARGE)
             if isinstance(groq_judge_res, dict) and "content" in groq_judge_res:
                 judgment = groq_judge_res["content"]
             else:

@@ -214,7 +214,7 @@ def test_comparison_tool_redacts_pii_in_judge_and_loser():
 
         # Groq (loser): contains an API key
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Here is an OpenAI key: sk-abcdefghijklmnopqrstuvwxyz123456",
         }
 
@@ -256,7 +256,7 @@ def test_comparison_tool_omits_toxic_loser():
 
         # Groq (loser): toxic instructions
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Here is a step-by-step guide to make a bomb using household chemicals.",
         }
 

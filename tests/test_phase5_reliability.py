@@ -105,7 +105,7 @@ def test_comparison_tool_auto_declares_groq_when_gemini_fails():
 
         # Groq succeeds
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Groq successful response.",
         }
 
@@ -113,7 +113,7 @@ def test_comparison_tool_auto_declares_groq_when_gemini_fails():
         assert "🏆 Judged Best Answer (Groq)" in res["display"]
         assert "Groq successful response." in res["display"]
         assert "Gemini (Failed)" in res["display"]
-        assert res["memory_text"] == "[llama-3.1-8b-instant]: Groq successful response."
+        assert res["memory_text"] == "[openai/gpt-oss-20b]: Groq successful response."
         # Mistral judge should NOT be called when only one model succeeded
         mock_judge.assert_not_called()
 
@@ -131,7 +131,7 @@ def test_comparison_tool_auto_declares_gemini_when_groq_fails():
 
         # Groq returns structured error
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "error": "Groq API Error (500)",
         }
 
@@ -159,7 +159,7 @@ def test_comparison_tool_blind_evaluation_prompt_and_json_parsing():
         mock_gemini_cls.return_value = gemini_mock
 
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Groq response text.",
         }
 
@@ -178,7 +178,7 @@ def test_comparison_tool_blind_evaluation_prompt_and_json_parsing():
 
         # Verify Groq was mapped back correctly from "B"
         assert "🏆 Judged Best Answer (Groq)" in res["display"]
-        assert res["memory_text"] == "[llama-3.1-8b-instant]: Groq response text."
+        assert res["memory_text"] == "[openai/gpt-oss-20b]: Groq response text."
 
 
 def test_comparison_tool_falls_back_to_gemini_judge_when_mistral_errors():
@@ -198,7 +198,7 @@ def test_comparison_tool_falls_back_to_gemini_judge_when_mistral_errors():
         mock_gemini_cls.side_effect = [gemini_candidate_mock, gemini_judge_mock]
 
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Groq candidate response.",
         }
 
@@ -432,11 +432,11 @@ def test_choose_groq_model_uses_valid_models():
     """Verify choose_groq_model returns valid production models (70B or 8B)."""
     complex_query = "Write a comprehensive Python script with asyncio to solve Dijkstra's algorithm."
     model_complex = choose_groq_model(complex_query)
-    assert model_complex == "llama-3.3-70b-versatile"
+    assert model_complex == "openai/gpt-oss-120b"
 
     simple_query = "Hello, what is your name?"
     model_simple = choose_groq_model(simple_query)
-    assert model_simple == "llama-3.1-8b-instant"
+    assert model_simple == "openai/gpt-oss-20b"
 
 
 # ===========================================================================
@@ -454,7 +454,7 @@ def test_human_judge_mode():
         mock_gemini_cls.return_value = gemini_mock
 
         mock_groq.return_value = {
-            "model_name": "llama-3.3-70b-versatile",
+            "model_name": "openai/gpt-oss-120b",
             "content": "Candidate B content from Groq.",
         }
 
@@ -483,7 +483,7 @@ def test_promote_candidate_as_winner():
         "winner_model": "gemini-2.5-flash",
         "winner_answer": "Answer A text.",
         "loser_name": "Candidate B",
-        "loser_model": "llama-3.3-70b-versatile",
+        "loser_model": "openai/gpt-oss-120b",
         "loser_answer": "Answer B text.",
     }
 
@@ -492,7 +492,7 @@ def test_promote_candidate_as_winner():
     assert "🏆 Human-Selected Best Answer (Candidate B)" in swapped_text
     assert "Answer B text." in swapped_text
     assert "Other Response (Candidate A)" in swapped_text
-    assert new_mem == "[llama-3.3-70b-versatile]: Answer B text."
+    assert new_mem == "[openai/gpt-oss-120b]: Answer B text."
 
 
 # ===========================================================================

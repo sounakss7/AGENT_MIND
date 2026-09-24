@@ -120,7 +120,7 @@ def test_comparison_tool_returns_distilled_memory_and_display():
 
         # Mock Groq
         mock_groq.return_value = {
-            "model_name": "llama-3.1-8b-instant",
+            "model_name": "openai/gpt-oss-20b",
             "content": "Groq answer: sorting takes O(N^2) for bubblesort, O(N log N) for mergesort.",
         }
 

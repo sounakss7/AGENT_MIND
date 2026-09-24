@@ -616,8 +616,8 @@ with st.sidebar:
     st.markdown("### ⚔️ Arena Models (MoA)")
     contender_options = [
         "Gemini 2.5 Flash",
-        "Groq Llama-3.3 70B",
-        "Groq Llama-3.1 8B",
+        "Groq GPT-OSS 120B",
+        "Groq GPT-OSS 20B",
         "DeepSeek Flash",
         "Kimi K3",
     ]
@@ -640,8 +640,8 @@ with st.sidebar:
 
     model_type_map = {
         "Gemini 2.5 Flash": "gemini",
-        "Groq Llama-3.3 70B": "groq",
-        "Groq Llama-3.1 8B": "groq-instant",
+        "Groq GPT-OSS 120B": "groq",
+        "Groq GPT-OSS 20B": "groq-instant",
         "DeepSeek Flash": "deepseek-flash",
         "Kimi K3": "kimi-k3",
     }
@@ -653,7 +653,7 @@ with st.sidebar:
     judge_options = [
         "Mistral AI (Impartial External Judge)",
         "Gemini 2.5 Flash (Analytical Judge)",
-        "Groq Llama-3.3 70B (High-Speed Judge)",
+        "Groq GPT-OSS 120B (High-Speed Judge)",
         "🧑 Human Judge (You Decide!)",
     ]
     judge_choice = st.selectbox(
@@ -665,7 +665,7 @@ with st.sidebar:
     judge_map = {
         "Mistral AI (Impartial External Judge)": "mistral",
         "Gemini 2.5 Flash (Analytical Judge)": "gemini",
-        "Groq Llama-3.3 70B (High-Speed Judge)": "groq",
+        "Groq GPT-OSS 120B (High-Speed Judge)": "groq",
         "🧑 Human Judge (You Decide!)": "human",
     }
     selected_judge_type = judge_map.get(judge_choice, "mistral")
@@ -675,7 +675,7 @@ with st.sidebar:
     routing_options = [
         "⚡ Self-Routing Engine (Local, <1ms)",
         "🌐 Gemini 2.5 Flash (LLM Router)",
-        "🚀 Groq Llama-3.3 70B (LLM Router)",
+        "🚀 Groq GPT-OSS 120B (LLM Router)",
     ]
     routing_choice = st.selectbox(
         "Routing Engine",
@@ -686,7 +686,7 @@ with st.sidebar:
     routing_map = {
         "⚡ Self-Routing Engine (Local, <1ms)": "self",
         "🌐 Gemini 2.5 Flash (LLM Router)": "gemini",
-        "🚀 Groq Llama-3.3 70B (LLM Router)": "groq",
+        "🚀 Groq GPT-OSS 120B (LLM Router)": "groq",
     }
     selected_routing_mode = routing_map.get(routing_choice, "self")
 

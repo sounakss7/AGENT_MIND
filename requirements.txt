@@ -1,6 +1,7 @@
 # ==============================================================================
 # AGENT_MIND / Neuroplexa AI Dependencies
-# Cleaned, deduplicated, and pruned (Phase 8 Hygiene)
+# Updated for Groq GPT-OSS models (Aug 2026 migration)
+# Python 3.11 / 3.12 compatible
 # ==============================================================================
 
 # --- Core UI & Data ---
@@ -24,9 +25,11 @@ langsmith
 qdrant-client==1.9.1
 sentence-transformers>=2.7.0
 
-# --- LangChain Ecosystem (Strictly Compatible Pinned Set) ---
-langchain==0.1.17
-langchain-core==0.1.52
-langchain-google-genai==0.0.11
-langchain-openai==0.1.7
-langgraph==0.0.30
+# --- LangChain Ecosystem (Updated compatible pinned set) ---
+# Upgraded from 0.1.x → 0.2.x for Python 3.11/3.12 CI compatibility
+# and faster pip resolution (avoids grpcio-status backtracking bug)
+langchain==0.2.16
+langchain-core==0.2.38
+langchain-google-genai==1.0.10
+langchain-openai==0.1.25
+langgraph==0.2.28
