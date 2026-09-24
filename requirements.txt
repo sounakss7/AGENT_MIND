@@ -23,6 +23,7 @@ langsmith
 # --- Vector Database & Embeddings ---
 qdrant-client==1.9.1
 sentence-transformers>=2.7.0
+torchvision
 
 # --- LangChain Ecosystem (Strictly Compatible Pinned Set) ---
 langchain==0.1.17
