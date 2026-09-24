@@ -24,7 +24,16 @@ from gtts import gTTS
 from langchain.schema import HumanMessage, AIMessage
 
 # --- Import the Agent Logic ---
-from agent import build_agent, file_analysis_tool, extract_file_text
+from agent import (
+    build_agent,
+    file_analysis_tool,
+    extract_file_text,
+    swap_comparison_response,
+    promote_candidate_as_winner,
+    MODEL_BENCHMARKS,
+    SelfRouter,
+    self_route_query,
+)
 
 # --- Vector Memory ---
 from vector_memory import (
@@ -131,7 +140,11 @@ def create_copy_button(text_to_copy: str, button_key: str):
                 }}
             }})();
         </script>"""
-    st.components.v1.html(html_code, height=40)
+    try:
+        import streamlit.components.v1 as components
+        components.html(html_code, height=40)
+    except Exception:
+        pass
 
 
 def set_animated_fluid_background():
@@ -211,6 +224,7 @@ if "metrics" not in st.session_state:
         "total_latency":   0.0,
         "average_latency": 0.0,
         "accuracy_feedback": {"👍": 0, "👎": 0},
+        "human_overrides": 0,
         "last_query_details": {},
     }
 if "security_events" not in st.session_state:
@@ -600,7 +614,13 @@ with st.sidebar:
     # ── Arena Models (Mixture-of-Agents) ─────────────────────────
     st.markdown("---")
     st.markdown("### ⚔️ Arena Models (MoA)")
-    contender_options = ["Gemini 2.5 Flash", "Groq Llama-3.1", "DeepSeek Flash", "Kimi K3"]
+    contender_options = [
+        "Gemini 2.5 Flash",
+        "Groq Llama-3.3 70B",
+        "Groq Llama-3.1 8B",
+        "DeepSeek Flash",
+        "Kimi K3",
+    ]
 
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -611,22 +631,78 @@ with st.sidebar:
             help="First candidate model competing in Mixture-of-Agents."
         )
     with col_m2:
-        default_b_idx = 2 if deepseek_api_key else 1
         contender_b = st.selectbox(
             "Contender B",
             contender_options,
-            index=default_b_idx,
+            index=1,
             help="Second candidate model competing in Mixture-of-Agents."
         )
 
     model_type_map = {
         "Gemini 2.5 Flash": "gemini",
-        "Groq Llama-3.1": "groq",
+        "Groq Llama-3.3 70B": "groq",
+        "Groq Llama-3.1 8B": "groq-instant",
         "DeepSeek Flash": "deepseek-flash",
         "Kimi K3": "kimi-k3",
     }
     candidate_a_type = model_type_map.get(contender_a, "gemini")
     candidate_b_type = model_type_map.get(contender_b, "groq")
+
+    # ── Arena Judge Selection ────────────────────────────────────
+    st.markdown("### ⚖️ Arena Judge & Evaluation")
+    judge_options = [
+        "Mistral AI (Impartial External Judge)",
+        "Gemini 2.5 Flash (Analytical Judge)",
+        "Groq Llama-3.3 70B (High-Speed Judge)",
+        "🧑 Human Judge (You Decide!)",
+    ]
+    judge_choice = st.selectbox(
+        "Evaluation Judge",
+        judge_options,
+        index=0,
+        help="Select the AI judge to arbitrate the arena comparison, or choose Human Judge to evaluate directly."
+    )
+    judge_map = {
+        "Mistral AI (Impartial External Judge)": "mistral",
+        "Gemini 2.5 Flash (Analytical Judge)": "gemini",
+        "Groq Llama-3.3 70B (High-Speed Judge)": "groq",
+        "🧑 Human Judge (You Decide!)": "human",
+    }
+    selected_judge_type = judge_map.get(judge_choice, "mistral")
+
+    # ── Query Routing Engine Selection ───────────────────────────
+    st.markdown("### 🧭 Query Routing Engine")
+    routing_options = [
+        "⚡ Self-Routing Engine (Local, <1ms)",
+        "🌐 Gemini 2.5 Flash (LLM Router)",
+        "🚀 Groq Llama-3.3 70B (LLM Router)",
+    ]
+    routing_choice = st.selectbox(
+        "Routing Engine",
+        routing_options,
+        index=0,
+        help="Self-Routing executes deterministic regex & intent classification in <0.1ms without external LLM network calls or quota consumption."
+    )
+    routing_map = {
+        "⚡ Self-Routing Engine (Local, <1ms)": "self",
+        "🌐 Gemini 2.5 Flash (LLM Router)": "gemini",
+        "🚀 Groq Llama-3.3 70B (LLM Router)": "groq",
+    }
+    selected_routing_mode = routing_map.get(routing_choice, "self")
+
+    # ── Model Benchmarks Matrix Expander ──────────────────────────
+    with st.expander("📊 Model Benchmarks & Specs", expanded=False):
+        st.markdown("**Mixture-of-Agents Contenders & Performance:**")
+        bench_data = []
+        for m_name, stats in MODEL_BENCHMARKS.items():
+            bench_data.append({
+                "Model": m_name,
+                "MMLU": stats.get("mmlu", "N/A"),
+                "Math": stats.get("math", "N/A"),
+                "Coding": stats.get("humaneval", "N/A"),
+                "Speed": stats.get("speed", "N/A"),
+            })
+        st.dataframe(pd.DataFrame(bench_data), hide_index=True)
 
     # ── Security status ───────────────────────────────────────────
     st.markdown("---")
@@ -683,7 +759,9 @@ with st.sidebar:
             "total_requests": 0,
             "tool_usage": {"Comparison": 0, "Image Gen": 0, "Web Search": 0, "File Analysis": 0},
             "total_latency": 0.0, "average_latency": 0.0,
-            "accuracy_feedback": {"👍": 0, "👎": 0}, "last_query_details": {},
+            "accuracy_feedback": {"👍": 0, "👎": 0},
+            "human_overrides": 0,
+            "last_query_details": {},
         }
         st.rerun()
 
@@ -703,6 +781,8 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     col1.metric("Requests",    metrics["total_requests"])
     col2.metric("Avg Latency", f"{metrics['average_latency']:.2f} s")
+    if metrics.get("human_overrides", 0) > 0:
+        st.metric("🔄 Human Overrides", metrics["human_overrides"])
 
     if metrics["total_requests"] > 0:
         tool_df = pd.DataFrame(
@@ -747,6 +827,84 @@ with chat_tab:
             if "text" in message:
                 st.markdown(message["text"])
                 if message["role"] == "assistant":
+                    # Case 1: Human Judge mode awaiting choice
+                    comp_data = message.get("comparison_data")
+                    if comp_data and isinstance(comp_data, dict) and comp_data.get("is_human_judge") and not message.get("is_overridden", False):
+                        col_ha, col_hb = st.columns(2)
+                        with col_ha:
+                            cand_a_name = comp_data.get("winner_name", "Candidate A")
+                            if st.button(f"🏆 Choose {cand_a_name} as Winner", key=f"human_judge_a_{i}", help="Declare Candidate A as the winning response."):
+                                swapped_text, new_mem = promote_candidate_as_winner("A", comp_data)
+                                message["text"] = swapped_text
+                                message["memory_text"] = new_mem
+                                message["audio_bytes"] = None
+                                message["is_overridden"] = True
+                                save_memory(role="assistant", content=new_mem, session_id=SESSION_ID)
+                                if "history_cache" in st.session_state: del st.session_state["history_cache"]
+                                if "metrics" in st.session_state:
+                                    st.session_state.metrics["human_overrides"] = st.session_state.metrics.get("human_overrides", 0) + 1
+                                st.toast(f"✅ {cand_a_name} declared as winner! Memory updated.")
+                                st.rerun()
+                        with col_hb:
+                            cand_b_name = comp_data.get("loser_name", "Candidate B")
+                            if st.button(f"🏆 Choose {cand_b_name} as Winner", key=f"human_judge_b_{i}", help="Declare Candidate B as the winning response."):
+                                swapped_text, new_mem = promote_candidate_as_winner("B", comp_data)
+                                message["text"] = swapped_text
+                                message["memory_text"] = new_mem
+                                message["audio_bytes"] = None
+                                message["is_overridden"] = True
+                                save_memory(role="assistant", content=new_mem, session_id=SESSION_ID)
+                                if "history_cache" in st.session_state: del st.session_state["history_cache"]
+                                if "metrics" in st.session_state:
+                                    st.session_state.metrics["human_overrides"] = st.session_state.metrics.get("human_overrides", 0) + 1
+                                st.toast(f"✅ {cand_b_name} declared as winner! Memory updated.")
+                                st.rerun()
+
+                    # Case 2: AI-Judged comparison with Human-in-the-Loop Override ("Disagree with Judge")
+                    elif "### Other Response" in message.get("text", ""):
+                        if message.get("is_overridden", False):
+                            st.caption("✅ *You promoted this response over the judge's evaluation. Vector memory and future context updated.*")
+                        else:
+                            if st.button(
+                                "🔄 Promote this response as winner",
+                                key=f"promote_btn_{i}",
+                                help="Override the judge and promote the alternative response as the winner in memory and context."
+                            ):
+                                comp_data = message.get("comparison_data")
+                                swapped_text, new_mem = swap_comparison_response(message["text"], comp_data)
+                                message["text"] = swapped_text
+                                message["memory_text"] = new_mem
+                                message["audio_bytes"] = None
+                                message["is_overridden"] = True
+                                if comp_data and isinstance(comp_data, dict):
+                                    message["comparison_data"] = {
+                                        **comp_data,
+                                        "display": swapped_text,
+                                        "memory_text": new_mem,
+                                        "winner_name": comp_data.get("loser_name"),
+                                        "winner_model": comp_data.get("loser_model"),
+                                        "winner_answer": comp_data.get("loser_answer"),
+                                        "loser_name": comp_data.get("winner_name"),
+                                        "loser_model": comp_data.get("winner_model"),
+                                        "loser_answer": comp_data.get("winner_answer"),
+                                    }
+
+                                # Update long-term Qdrant vector memory
+                                save_memory(role="assistant", content=new_mem, session_id=SESSION_ID)
+                                if "history_cache" in st.session_state:
+                                    del st.session_state["history_cache"]
+
+                                # Update telemetry / metrics
+                                if "metrics" in st.session_state:
+                                    if "human_overrides" not in st.session_state.metrics:
+                                        st.session_state.metrics["human_overrides"] = 0
+                                    st.session_state.metrics["human_overrides"] += 1
+                                    if "accuracy_feedback" in st.session_state.metrics:
+                                        st.session_state.metrics["accuracy_feedback"]["👎"] += 1
+
+                                st.toast("✅ Response promoted to winner! Vector memory & chat context updated.")
+                                st.rerun()
+
                     c1, c2 = st.columns([1, 4])
                     with c1:
                         audio_bytes = message.get("audio_bytes")
@@ -775,11 +933,12 @@ with chat_tab:
 
     # ── Agent async runner ────────────────────────────────────────
     async def run_agent_and_capture_trajectory(agent, inputs):
-        trace_steps    = []
-        current_step   = {}
-        final_response = None
-        memory_text    = None
-        tool_used      = "N/A"
+        trace_steps     = []
+        current_step    = {}
+        final_response  = None
+        memory_text     = None
+        tool_used       = "N/A"
+        comparison_data = None
 
         async for event in agent.astream_events(inputs, version="v1"):
             kind = event["event"]
@@ -804,11 +963,13 @@ with chat_tab:
                         final_response = output["final_response"]
                     if "memory_text" in output:
                         memory_text = output["memory_text"]
+                    if "comparison_data" in output:
+                        comparison_data = output["comparison_data"]
 
         if memory_text is None and isinstance(final_response, str):
             memory_text = final_response
 
-        return final_response, trace_steps, tool_used, memory_text
+        return final_response, trace_steps, tool_used, memory_text, comparison_data
 
     def pretty_print_dict(d):
         def safe_converter(o):
@@ -932,6 +1093,8 @@ with chat_tab:
                         kimi_api_key=kimi_api_key,
                         candidate_a_type=candidate_a_type,
                         candidate_b_type=candidate_b_type,
+                        judge_type=selected_judge_type,
+                        routing_mode=selected_routing_mode,
                     )
 
                     # Build chat history from prior messages (excluding current turn)
@@ -955,10 +1118,12 @@ with chat_tab:
                         "memory_context":   memory_context,
                         "candidate_a_type": candidate_a_type,
                         "candidate_b_type": candidate_b_type,
+                        "judge_type":       selected_judge_type,
+                        "routing_mode":     selected_routing_mode,
                     }
 
                     try:
-                        final_response, trace_steps, tool_used_key, memory_text = asyncio.run(
+                        final_response, trace_steps, tool_used_key, memory_text, comparison_data = asyncio.run(
                             run_agent_and_capture_trajectory(agent, inputs)
                         )
                     except Exception as e:
@@ -967,6 +1132,7 @@ with chat_tab:
                         trace_steps = []
                         tool_used_key = "Error"
                         memory_text = None
+                        comparison_data = None
 
                     st.session_state.trajectory.append(
                         {"prompt": clean_prompt, "steps": trace_steps}
@@ -1001,7 +1167,14 @@ with chat_tab:
                             save_memory(role="assistant", content=assistant_memory, session_id=SESSION_ID)
 
                         st.session_state.messages.append(
-                            {"role": "assistant", "text": final_response, "memory_text": memory_text, "audio_bytes": None}
+                            {
+                                "role": "assistant",
+                                "text": final_response,
+                                "memory_text": memory_text,
+                                "audio_bytes": None,
+                                "comparison_data": comparison_data,
+                                "is_overridden": False,
+                            }
                         )
 
                     elif isinstance(final_response, dict) and "image" in final_response:

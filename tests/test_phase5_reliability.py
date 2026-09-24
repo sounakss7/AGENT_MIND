@@ -22,7 +22,12 @@ from agent import (
     keyword_router_fallback,
     web_search_tool,
     AgentState,
+    SelfRouter,
+    self_route_query,
+    choose_groq_model,
+    promote_candidate_as_winner,
 )
+from security_guard import evaluation_guard
 
 
 # ===========================================================================
@@ -417,5 +422,155 @@ def test_comparison_tool_auto_declares_when_deepseek_balance_error():
         assert "DeepSeek (Failed)" in res["display"]
         assert "Gemini selected automatically because DeepSeek encountered an error." in res["display"]
         mock_judge.assert_not_called()
+
+
+# ===========================================================================
+# 6. Groq Model Selection & Fallback
+# ===========================================================================
+
+def test_choose_groq_model_uses_valid_models():
+    """Verify choose_groq_model returns valid production models (70B or 8B)."""
+    complex_query = "Write a comprehensive Python script with asyncio to solve Dijkstra's algorithm."
+    model_complex = choose_groq_model(complex_query)
+    assert model_complex == "llama-3.3-70b-versatile"
+
+    simple_query = "Hello, what is your name?"
+    model_simple = choose_groq_model(simple_query)
+    assert model_simple == "llama-3.1-8b-instant"
+
+
+# ===========================================================================
+# 7. Arena Judge Selection & Human-in-the-Loop Override
+# ===========================================================================
+
+def test_human_judge_mode():
+    """Verify judge_type='human' presents both candidates side-by-side without calling AI judges."""
+    with patch("agent.ChatGoogleGenerativeAI") as mock_gemini_cls, \
+         patch("agent.query_groq") as mock_groq, \
+         patch("agent.query_mistral_judge") as mock_judge:
+
+        gemini_mock = MagicMock()
+        gemini_mock.invoke.return_value.content = "Candidate A content from Gemini."
+        mock_gemini_cls.return_value = gemini_mock
+
+        mock_groq.return_value = {
+            "model_name": "llama-3.3-70b-versatile",
+            "content": "Candidate B content from Groq.",
+        }
+
+        res = comparison_and_evaluation_tool(
+            query="Explain recursion",
+            history=[],
+            google_api_key="fake_gkey",
+            groq_api_key="fake_groqkey",
+            mistral_api_key="fake_mistralkey",
+            candidate_a_type="gemini",
+            candidate_b_type="groq",
+            judge_type="human",
+        )
+
+        assert res.get("is_human_judge") is True
+        assert "🧑 Human Judge Arena: You Decide!" in res["display"]
+        assert "Candidate A content from Gemini." in res["display"]
+        assert "Candidate B content from Groq." in res["display"]
+        mock_judge.assert_not_called()
+
+
+def test_promote_candidate_as_winner():
+    """Verify promote_candidate_as_winner formats selected winner correctly."""
+    comp_data = {
+        "winner_name": "Candidate A",
+        "winner_model": "gemini-2.5-flash",
+        "winner_answer": "Answer A text.",
+        "loser_name": "Candidate B",
+        "loser_model": "llama-3.3-70b-versatile",
+        "loser_answer": "Answer B text.",
+    }
+
+    # Promote Candidate B as winner
+    swapped_text, new_mem = promote_candidate_as_winner("B", comp_data)
+    assert "🏆 Human-Selected Best Answer (Candidate B)" in swapped_text
+    assert "Answer B text." in swapped_text
+    assert "Other Response (Candidate A)" in swapped_text
+    assert new_mem == "[llama-3.3-70b-versatile]: Answer B text."
+
+
+# ===========================================================================
+# 8. Multi-Dimensional Rubric Evaluation Guardrails
+# ===========================================================================
+
+def test_evaluation_guardrail_scoring():
+    """Verify evaluation guardrail produces rubric scores and valid grades."""
+    query = "Explain quicksort with code"
+    response = """
+    Quicksort is a divide-and-conquer algorithm.
+    ```python
+    def quicksort(arr):
+        if len(arr) <= 1:
+            return arr
+        pivot = arr[len(arr) // 2]
+        left = [x for x in arr if x < pivot]
+        middle = [x for x in arr if x == pivot]
+        right = [x for x in arr if x > pivot]
+        return quicksort(left) + middle + quicksort(right)
+    ```
+    """
+    scores = evaluation_guard.evaluate_response(query, response)
+    assert "overall" in scores
+    assert "clarity" in scores
+    assert "completeness" in scores
+    assert "adherence" in scores
+    assert "rubric_grade" in scores
+    assert 0 <= scores["overall"] <= 100
+    assert any(g in scores["rubric_grade"] for g in ["A+", "A", "B+", "B", "C", "D"])
+
+
+# ===========================================================================
+# 9. Self-Routing Engine (Zero-API Intent Classification)
+# ===========================================================================
+
+def test_self_router_rules():
+    """Verify SelfRouter correctly routes image, search, negative guards, and chat."""
+    # Image commands & natural prompts
+    assert SelfRouter.route("/image cybernetic tiger")["route"] == "image_generator"
+    assert SelfRouter.route("generate image of a futuristic neon city")["route"] == "image_generator"
+    assert SelfRouter.route("draw a cute kitten sitting on a mat")["route"] == "image_generator"
+    assert SelfRouter.route("picture of a sunset over the ocean")["route"] == "image_generator"
+
+    # Negative guard: coding/explanation asking about images
+    assert SelfRouter.route("how to generate an image using python")["route"] == "comparison_chat"
+    assert SelfRouter.route("explain how diffusion models generate images")["route"] == "comparison_chat"
+
+    # Search commands & live queries
+    assert SelfRouter.route("/search quantum computing breakthrough")["route"] == "web_search"
+    assert SelfRouter.route("what is today's weather in Tokyo?")["route"] == "web_search"
+    assert SelfRouter.route("what is the news today")["route"] == "web_search"
+    assert SelfRouter.route("who won the 2026 super bowl")["route"] == "web_search"
+    assert SelfRouter.route("bitcoin stock price right now")["route"] == "web_search"
+
+    # Negative guard: coding asking about search
+    assert SelfRouter.route("how to write binary search in python")["route"] == "comparison_chat"
+    assert SelfRouter.route("write quicksort algorithm in Rust")["route"] == "comparison_chat"
+    assert SelfRouter.route("derive y = mx + c")["route"] == "comparison_chat"
+
+
+def test_router_self_mode_bypasses_all_llms():
+    """Verify router with routing_mode='self' executes locally without calling Gemini or Groq."""
+    with patch("agent.ChatGoogleGenerativeAI") as mock_gemini_cls, \
+         patch("agent.query_groq") as mock_groq:
+
+        state: AgentState = {
+            "query": "generate image of a red race car",
+            "history": [],
+            "routing_mode": "self",
+        }
+
+        res = router(state, google_api_key="fake_key", groq_api_key="fake_key")
+        assert res == {"route": "image_generator"}
+
+        # Gemini and Groq should NEVER have been called
+        mock_gemini_cls.assert_not_called()
+        mock_groq.assert_not_called()
+
 
 

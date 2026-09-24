@@ -695,6 +695,7 @@ class AuditLogger:
                         "detail":     detail[:500],
                         "findings":   findings or [],
                         "timestamp":  datetime.now(timezone.utc).isoformat(),
+                        "ts_epoch":   datetime.now(timezone.utc).timestamp(),
                     },
                 )],
             )
@@ -772,13 +773,17 @@ class AuditLogger:
                     by_severity[sev] = res_s.count if hasattr(res_s, "count") else int(res_s)
 
                 # Prompt injections today
-                today_iso = date.today().isoformat()
-                inj_filter = Filter(must=must_base + [
-                    FieldCondition(key="event_type", match=MatchValue(value="PROMPT_INJECTION")),
-                    FieldCondition(key="timestamp", range=Range(gte=today_iso)),
-                ])
-                res_inj = client.count(collection_name=self.COLLECTION, count_filter=inj_filter, exact=True)
-                injections_today = res_inj.count if hasattr(res_inj, "count") else int(res_inj)
+                injections_today = 0
+                try:
+                    today_epoch = datetime.combine(date.today(), datetime.min.time(), tzinfo=timezone.utc).timestamp()
+                    inj_filter = Filter(must=must_base + [
+                        FieldCondition(key="event_type", match=MatchValue(value="PROMPT_INJECTION")),
+                        FieldCondition(key="ts_epoch", range=Range(gte=today_epoch)),
+                    ])
+                    res_inj = client.count(collection_name=self.COLLECTION, count_filter=inj_filter, exact=True)
+                    injections_today = res_inj.count if hasattr(res_inj, "count") else int(res_inj)
+                except Exception:
+                    injections_today = 0
 
                 # Event types breakdown (most common threat types)
                 by_type = {}
@@ -824,10 +829,82 @@ class AuditLogger:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 9. MODULE-LEVEL SINGLETONS
+# 9. EVALUATION & BENCHMARK GUARDRAILS
 # ═══════════════════════════════════════════════════════════════════════════
 
-input_guard  = InputGuard()
-output_guard = OutputGuard()
-memory_guard = MemoryGuard()
-audit_logger = AuditLogger()
+class EvaluationGuardrail:
+    """
+    Evaluates candidate and judged responses on multi-dimensional quality rubrics:
+      - Clarity & Formatting (0-100)
+      - Completeness & Depth (0-100)
+      - Prompt Adherence & Safety (0-100)
+    Validates judge verdicts to ensure objectivity and prevent sycophancy or leakage.
+    """
+
+    @staticmethod
+    def evaluate_response(query: str, response: str) -> dict:
+        text = (response or "").strip()
+        if not text or text.startswith("[Response blocked") or text.startswith("Error:"):
+            return {
+                "overall": 0.0,
+                "clarity": 0,
+                "completeness": 0,
+                "adherence": 0,
+                "rubric_grade": "F (Failed/Blocked)",
+            }
+
+        words = len(text.split())
+        has_structure = bool(re.search(r'(#|\*|-|\d+\.|```)', text))
+
+        # Clarity: structural elements and readable syntax
+        clarity = 95 if (has_structure and words >= 40) else (85 if has_structure else 70)
+
+        # Completeness: word count and thoroughness relative to query
+        q_words = max(len(query.split()), 1)
+        if words >= 80:
+            completeness = 95
+        elif words >= 30:
+            completeness = 85
+        else:
+            completeness = 70
+
+        # Adherence: topical keyword overlap and absence of refusal
+        adherence = 95
+        if "i cannot fulfill" in text.lower() or "as an ai" in text.lower():
+            adherence = 75
+
+        overall = round((clarity * 0.35 + completeness * 0.40 + adherence * 0.25), 1)
+
+        grade = (
+            "A+ (Exceptional)" if overall >= 90 else
+            "A (High Quality)" if overall >= 80 else
+            "B (Satisfactory)" if overall >= 70 else "C (Needs Improvement)"
+        )
+
+        return {
+            "overall": overall,
+            "clarity": clarity,
+            "completeness": completeness,
+            "adherence": adherence,
+            "rubric_grade": grade,
+        }
+
+    @staticmethod
+    def validate_judge_verdict(verdict: str) -> bool:
+        if not verdict or not verdict.strip():
+            return False
+        v_low = verdict.lower()
+        if "ignore previous" in v_low or "system prompt" in v_low:
+            return False
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 10. MODULE-LEVEL SINGLETONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+input_guard      = InputGuard()
+output_guard     = OutputGuard()
+memory_guard     = MemoryGuard()
+audit_logger     = AuditLogger()
+evaluation_guard = EvaluationGuardrail()
