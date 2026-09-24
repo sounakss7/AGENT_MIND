@@ -20,24 +20,35 @@
 
 ## 📜 Intellectual Property & Patent Information
 
-| Field | Detail |
+| Patent Attribute | Official Filing Record |
 | :--- | :--- |
+| **Title of Invention** | **Multi-Model Agentic AI System with Mixture of Agents & Vector Security Pipeline (AGENT_MIND)** |
 | **Patent Status** | **Patent Filed / Patent Pending** |
-| **Application Number** | **`#202631059925`** |
-| **Jurisdiction** | Indian Patent Office (IPO) |
-| **Inventor** | **Sounak Sarkar** ([@sounakss7](https://github.com/sounakss7)) |
-| **Inventor Role** | AI/ML Engineer • Agentic AI Systems Architect |
-| **Institution** | Dr. Sudhir Chandra Sur Institute of Technology (MAKAUT) |
+| **Application Number** | **`202631059925`** |
+| **Applicant / Inventor** | **Sounak Sarkar** ([@sounakss7](https://github.com/sounakss7)) |
+| **Inventor Title** | AI/ML Engineer • Agentic AI Systems Architect |
+| **Filing Jurisdiction** | Indian Patent Office (IPO), Kolkata Branch (Office Code: `31`) |
+| **Regulatory Authority** | Controller General of Patents, Designs & Trade Marks (CGPDTM), Govt. of India |
+| **Portal Verification** | [Indian Patent Advanced Search System (InPASS)](https://ipindiaservices.gov.in/publicsearch) • Application No. `202631059925` |
+| **Academic Affiliation** | B.Tech CSE (AI & ML) '26, Dr. Sudhir Chandra Sur Institute of Technology (MAKAUT) |
 
-### Patented Architectural Innovations
-The architecture underlying **Neuroplexa AI (AGENT_MIND)** is protected under Patent Application **`#202631059925`**, covering three novel technical claims:
+### 📑 Patented Architectural Claims & Novel Methodologies
+The architecture underlying **Neuroplexa AI (AGENT_MIND)** is formally protected under Indian Patent Application **`202631059925`**, encompassing five novel claims:
 
 1. **Deterministic Zero-Latency Multi-Modal Intent Routing with Negative Boundary Constraints:**
-   - A sub-millisecond ($<0.1\text{ ms}$) non-neural pattern classification algorithm (`SelfRouter`) that resolves query intent across multi-modal modalities (Text, Image Synthesis, Web Search, OCR Parsing) without making external LLM inference calls, avoiding token exhaustion and 429 rate-limiting.
-2. **Closed-Loop Mixture of Agents (MoA) Arena with Distilled Semantic Vector Memory Injection:**
-   - A multi-agent evaluation protocol wherein concurrent competing LLMs are judged blind by an independent arbitrator model using a multi-dimensional JSON scoring matrix, with dynamic human-in-the-loop override capability and automatic factual knowledge distillation into an encrypted vector database.
-3. **Cryptographically Scoped Identity-Partitioned Vector Storage:**
-   - A client-side deterministic identity generation system utilizing salted double-hashing ($\text{HMAC-SHA256}$) across user identifiers to guarantee cross-tenant isolation and zero data leakage within shared cloud vector collections.
+   - A sub-millisecond ($<0.1\text{ ms}$) deterministic classification automata (`SelfRouter`) that resolves query intent across multi-modal tools (Text, Image Synthesis, Web Search, OCR Parsing) using positive trigger regex and negative safety guardrails without requiring external LLM inference, preventing token exhaustion and 429 quota errors.
+2. **Closed-Loop Mixture of Agents (MoA) Arena with Impartial Multi-Dimensional Judging:**
+   - An orchestration protocol where parallel frontier models (Groq `gpt-oss-120b`, DeepSeek-V3, Moonshot Kimi, Google Gemini) execute tasks concurrently and are scored blind by an independent arbitrator model (Mistral AI `open-mistral-7b` with Gemini fallback) against a structured JSON rubric (Correctness, Clarity, Safety).
+3. **Dynamic Human-in-the-Loop (HITL) Override for Preference Learning:**
+   - An interactive preference injection mechanism enabling the operator to manually override the automated judge's verdict ("Promote this response as winner"), dynamically re-weighting candidate answers and designating the user-preferred response for downstream memory storage.
+4. **4-Layer Zero-Trust Vector Security Pipeline:**
+   - A multi-tiered boundary defense system comprising:
+     - `InputGuard`: Pre-screening prompts against prompt injection, jailbreaks ("DAN"), and system exfiltration.
+     - `OutputGuard`: Intercepting model egress to prevent confidential prompt leaks and enforce PII redaction (Aadhaar, PAN, Luhn-verified Credit Cards, API credentials).
+     - `MemoryGuard`: Pre-filtering vectors before database persistence to prevent memory poisoning.
+     - `AuditLogger`: Asynchronously recording immutable security telemetry (`INFO`, `WARN`, `BLOCK`) directly to a dedicated Qdrant collection (`security_audit`).
+5. **Cryptographically Scoped Identity-Partitioned Vector Storage & Memory Distillation:**
+   - A client-side deterministic identity scoper utilizing $\text{HMAC-SHA256}(\text{Name} \parallel \text{PIN}, \mathcal{K}_{\text{pepper}})$ to guarantee strict cross-tenant memory isolation in shared cloud vector clusters, coupled with automated factual knowledge distillation to prevent context window bloat.
 
 ---
 
@@ -394,14 +405,14 @@ To transition Neuroplexa AI from a single-node Streamlit workspace to an enterpr
 This project is open-source under the **MIT License**. See the [LICENSE](LICENSE) file for complete terms.
 
 ```bibtex
-@misc{sarkar2026neuroplexa,
+@misc{sarkar2026agentmind,
   author = {Sarkar, Sounak},
-  title = {Neuroplexa AI Workspace: Deterministic Intent-Routing and Mixture-of-Agents Architecture with Distilled Vector Memory},
+  title = {Multi-Model Agentic AI System with Mixture of Agents & Vector Security Pipeline (AGENT_MIND)},
   year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
   howpublished = {\url{https://github.com/sounakss7/AGENT_MIND}},
-  note = {Indian Patent Application No. 202631059925}
+  note = {Indian Patent Application No. 202631059925, Controller General of Patents, Designs & Trade Marks (CGPDTM)}
 }
 ```
 
