@@ -109,6 +109,96 @@ def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: in
     return {"model_name": model, "error": "Groq API exceeded max retries."}
 
 
+def query_deepseek(
+    prompt: str,
+    deepseek_api_key: str,
+    model: str = "deepseek-flash",
+    max_retries: int = 3,
+    timeout: int = 30,
+) -> dict:
+    """
+    Queries DeepSeek API (OpenAI compatible) with retries and exponential backoff.
+    Default model: deepseek-flash (DeepSeek-V4.1-Flash).
+    Endpoint: https://api.deepseek.com/chat/completions
+    """
+    if not deepseek_api_key:
+        return {"model_name": model, "error": "No DeepSeek API key provided."}
+
+    headers = {"Authorization": f"Bearer {deepseek_api_key}", "Content-Type": "application/json"}
+    data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 2048}
+
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.deepseek.com/chat/completions", json=data, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"]
+                return {"model_name": model, "content": content}
+            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                logging.warning(f"DeepSeek API {resp.status_code} received. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                return {"model_name": model, "error": f"DeepSeek API Error ({resp.status_code}): {resp.text}"}
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < max_retries - 1:
+                logging.warning(f"DeepSeek network error: {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {"model_name": model, "error": f"DeepSeek Timeout/Connection Error: {e}"}
+        except Exception as e:
+            return {"model_name": model, "error": f"DeepSeek Error: {e}"}
+
+    return {"model_name": model, "error": "DeepSeek API exceeded max retries."}
+
+
+def query_kimi(
+    prompt: str,
+    kimi_api_key: str,
+    model: str = "kimi-k3",
+    max_retries: int = 3,
+    timeout: int = 30,
+) -> dict:
+    """
+    Queries Kimi / Moonshot API (OpenAI compatible) with retries and exponential backoff.
+    Default model: kimi-k3 (Moonshot 2.8T MoE).
+    Endpoint: https://api.moonshot.ai/v1/chat/completions
+    """
+    if not kimi_api_key:
+        return {"model_name": model, "error": "No Kimi API key provided."}
+
+    headers = {"Authorization": f"Bearer {kimi_api_key}", "Content-Type": "application/json"}
+    data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 2048}
+
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post("https://api.moonshot.ai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"]
+                return {"model_name": model, "content": content}
+            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                logging.warning(f"Kimi API {resp.status_code} received. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                return {"model_name": model, "error": f"Kimi API Error ({resp.status_code}): {resp.text}"}
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < max_retries - 1:
+                logging.warning(f"Kimi network error: {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {"model_name": model, "error": f"Kimi Timeout/Connection Error: {e}"}
+        except Exception as e:
+            return {"model_name": model, "error": f"Kimi Error: {e}"}
+
+    return {"model_name": model, "error": "Kimi API exceeded max retries."}
+
+
 def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3, timeout: int = 30):
     """
     Queries Mistral judge with retries and exponential backoff on rate limits / server errors.
@@ -223,8 +313,12 @@ def comparison_and_evaluation_tool(
     mistral_api_key: str,
     session_id: str = "default",
     memory_context: Optional[str] = None,
+    deepseek_api_key: str = "",
+    kimi_api_key: str = "",
+    candidate_a_type: str = "gemini",
+    candidate_b_type: str = "groq",
 ) -> dict:
-    print("---TOOL: Executing Comparison (Judged by Mistral with Memory)---")
+    print(f"---TOOL: Executing Comparison ({candidate_a_type} vs {candidate_b_type} Judged by Mistral/Gemini)---")
 
     short_term_ctx = format_history(history)
     long_term_ctx  = memory_context if memory_context is not None else retrieve_relevant_memory(query, session_id=session_id)
@@ -249,63 +343,92 @@ Use the short-term context for immediate follow-ups ("rewrite that", "fix the bu
 Use the long-term memory only when the user refers to something discussed in a previous session.
 """
 
-    fast_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+    fast_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key) if google_api_key else None
     gemini_model_name = "gemini-2.5-flash"
 
     def _safe_gemini():
+        if not fast_llm:
+            return {"model_name": gemini_model_name, "error": "Gemini API key not configured."}
         try:
             return fast_llm.invoke(full_prompt_with_context).content
         except Exception as e:
             logging.error(f"Gemini generation error: {e}")
             return {"error": f"Gemini Error: {e}"}
 
+    def _execute_model(m_type: str):
+        mt = m_type.lower()
+        if "deepseek" in mt:
+            return query_deepseek(full_prompt_with_context, deepseek_api_key, model="deepseek-flash")
+        elif "kimi" in mt or "moonshot" in mt:
+            return query_kimi(full_prompt_with_context, kimi_api_key, model="kimi-k3")
+        elif "groq" in mt or "llama" in mt:
+            return query_groq(full_prompt_with_context, groq_api_key)
+        else:
+            return _safe_gemini()
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_gemini = executor.submit(_safe_gemini)
-        future_groq   = executor.submit(query_groq, full_prompt_with_context, groq_api_key)
-        gemini_result = future_gemini.result()
-        groq_result   = future_groq.result()
+        future_a = executor.submit(_execute_model, candidate_a_type)
+        future_b = executor.submit(_execute_model, candidate_b_type)
+        result_a = future_a.result()
+        result_b = future_b.result()
 
     # Determine errors on each side
-    gemini_has_err = isinstance(gemini_result, dict) and "error" in gemini_result
-    groq_has_err   = isinstance(groq_result, dict) and "error" in groq_result
+    has_err_a = isinstance(result_a, dict) and "error" in result_a
+    has_err_b = isinstance(result_b, dict) and "error" in result_b
 
-    gemini_text = gemini_result["error"] if gemini_has_err else (gemini_result or "")
-    groq_text   = groq_result["error"] if groq_has_err else (groq_result.get("content", "") if isinstance(groq_result, dict) else str(groq_result))
-    groq_model_name = groq_result.get("model_name", "Groq") if isinstance(groq_result, dict) else "Groq"
+    def _extract_model_and_label(m_type: str, res: any):
+        mt = m_type.lower()
+        if "deepseek" in mt:
+            m_name = res.get("model_name", "deepseek-flash") if isinstance(res, dict) else "deepseek-flash"
+            return m_name, "DeepSeek"
+        elif "kimi" in mt or "moonshot" in mt:
+            m_name = res.get("model_name", "kimi-k3") if isinstance(res, dict) else "kimi-k3"
+            return m_name, "Kimi"
+        elif "groq" in mt or "llama" in mt:
+            m_name = res.get("model_name", "Groq") if isinstance(res, dict) else "Groq"
+            return m_name, "Groq"
+        else:
+            return gemini_model_name, "Gemini"
+
+    model_name_a, label_a = _extract_model_and_label(candidate_a_type, result_a)
+    model_name_b, label_b = _extract_model_and_label(candidate_b_type, result_b)
+
+    text_a = result_a["error"] if has_err_a else (result_a.get("content", "") if isinstance(result_a, dict) else str(result_a or ""))
+    text_b = result_b["error"] if has_err_b else (result_b.get("content", "") if isinstance(result_b, dict) else str(result_b or ""))
     judge_source = "Automated Selection"
 
     # Case 1: Both models failed
-    if gemini_has_err and groq_has_err:
-        err_msg = f"### ⚠️ Both models failed to respond.\n\n- **Gemini:** {gemini_text}\n- **Groq:** {groq_text}"
+    if has_err_a and has_err_b:
+        err_msg = f"### ⚠️ Both models failed to respond.\n\n- **{label_a}:** {text_a}\n- **{label_b}:** {text_b}"
         return {"display": err_msg, "memory_text": ""}
 
-    # Case 2: Gemini failed, Groq succeeded
-    if gemini_has_err and not groq_has_err:
-        chosen_answer, chosen_model_name = groq_text, groq_model_name
-        winner_name = "Groq"
-        loser_response, loser_model_name, loser_name = gemini_text, gemini_model_name, "Gemini (Failed)"
-        judgment_clean = "Groq selected automatically because Gemini encountered an error."
+    # Case 2: Model A failed, Model B succeeded
+    if has_err_a and not has_err_b:
+        chosen_answer, chosen_model_name = text_b, model_name_b
+        winner_name = label_b
+        loser_response, loser_model_name, loser_name = text_a, model_name_a, f"{label_a} (Failed)"
+        judgment_clean = f"{label_b} selected automatically because {label_a} encountered an error."
         judge_source = "Automated (Single Candidate)"
 
-    # Case 3: Groq failed, Gemini succeeded
-    elif groq_has_err and not gemini_has_err:
-        chosen_answer, chosen_model_name = gemini_text, gemini_model_name
-        winner_name = "Gemini"
-        loser_response, loser_model_name, loser_name = groq_text, groq_model_name, "Groq (Failed)"
-        judgment_clean = "Gemini selected automatically because Groq encountered an error."
+    # Case 3: Model B failed, Model A succeeded
+    elif has_err_b and not has_err_a:
+        chosen_answer, chosen_model_name = text_a, model_name_a
+        winner_name = label_a
+        loser_response, loser_model_name, loser_name = text_b, model_name_b, f"{label_b} (Failed)"
+        judgment_clean = f"{label_a} selected automatically because {label_b} encountered an error."
         judge_source = "Automated (Single Candidate)"
 
     # Case 4: Both succeeded — call Mistral judge with randomized A/B order and neutral labels
     else:
-        is_gemini_a = random.choice([True, False])
-        if is_gemini_a:
-            resp_a, resp_b = gemini_text, groq_text
-            model_a, model_b = gemini_model_name, groq_model_name
-            label_a, label_b = "Gemini", "Groq"
+        is_a_first = random.choice([True, False])
+        if is_a_first:
+            resp_a, resp_b = text_a, text_b
+            model_a, model_b = model_name_a, model_name_b
+            eval_label_a, eval_label_b = label_a, label_b
         else:
-            resp_a, resp_b = groq_text, gemini_text
-            model_a, model_b = groq_model_name, gemini_model_name
-            label_a, label_b = "Groq", "Gemini"
+            resp_a, resp_b = text_b, text_a
+            model_a, model_b = model_name_b, model_name_a
+            eval_label_a, eval_label_b = label_b, label_a
 
         judge_prompt = f"""
 You are an impartial AI evaluator. Compare two candidate responses to a user's query and declare a winner.
@@ -359,21 +482,21 @@ Instructions:
                 if regex_match:
                     chosen_ab = regex_match.group(1).upper()
                 else:
-                    if "Winner: Gemini" in judgment or "winner: gemini" in judgment.lower():
-                        chosen_ab = "A" if is_gemini_a else "B"
-                    elif "Winner: Groq" in judgment or "winner: groq" in judgment.lower():
-                        chosen_ab = "B" if is_gemini_a else "A"
+                    if f"Winner: {eval_label_a}" in judgment or f"winner: {eval_label_a.lower()}" in judgment.lower():
+                        chosen_ab = "A"
+                    elif f"Winner: {eval_label_b}" in judgment or f"winner: {eval_label_b.lower()}" in judgment.lower():
+                        chosen_ab = "B"
         except Exception:
             chosen_ab = "A"
 
         if chosen_ab == "A":
-            winner_name = label_a
+            winner_name = eval_label_a
             chosen_answer, chosen_model_name = resp_a, model_a
-            loser_response, loser_model_name, loser_name = resp_b, model_b, label_b
+            loser_response, loser_model_name, loser_name = resp_b, model_b, eval_label_b
         else:
-            winner_name = label_b
+            winner_name = eval_label_b
             chosen_answer, chosen_model_name = resp_b, model_b
-            loser_response, loser_model_name, loser_name = resp_a, model_a, label_a
+            loser_response, loser_model_name, loser_name = resp_a, model_a, eval_label_a
 
         # Format and clean judge evaluation (extract reasoning from JSON, convert LaTeX to KaTeX, strip code block indentation)
         formatted_judgment = format_judge_evaluation(judgment)
@@ -600,18 +723,31 @@ Your Answer:
 # ===================================================================
 
 class AgentState(TypedDict, total=False):
-    query:          str
-    history:        List[BaseMessage]
-    route:          str
-    final_response: Optional[any]
-    session_id:     str
-    memory_context: Optional[str]
-    memory_text:    Optional[str]
+    query:            str
+    history:          List[BaseMessage]
+    route:            str
+    final_response:   Optional[any]
+    session_id:       str
+    memory_context:   Optional[str]
+    memory_text:      Optional[str]
+    candidate_a_type: Optional[str]
+    candidate_b_type: Optional[str]
 
 
 # --- NODE WRAPPERS ---
 
-def call_comparison_tool(state: AgentState, google_api_key: str, groq_api_key: str, mistral_api_key: str):
+def call_comparison_tool(
+    state: AgentState,
+    google_api_key: str,
+    groq_api_key: str,
+    mistral_api_key: str,
+    deepseek_api_key: str = "",
+    kimi_api_key: str = "",
+    candidate_a_type: str = "gemini",
+    candidate_b_type: str = "groq",
+):
+    cand_a = state.get("candidate_a_type") or candidate_a_type
+    cand_b = state.get("candidate_b_type") or candidate_b_type
     response = comparison_and_evaluation_tool(
         state["query"],
         state.get("history", []),
@@ -620,6 +756,10 @@ def call_comparison_tool(state: AgentState, google_api_key: str, groq_api_key: s
         mistral_api_key,
         session_id=state.get("session_id", "default"),
         memory_context=state.get("memory_context"),
+        deepseek_api_key=deepseek_api_key,
+        kimi_api_key=kimi_api_key,
+        candidate_a_type=cand_a,
+        candidate_b_type=cand_b,
     )
     if isinstance(response, dict):
         return {
@@ -723,13 +863,30 @@ Return ONLY the tool name.
 
 # --- BUILD AGENT ---
 
-def build_agent(google_api_key: str, groq_api_key: str, pollinations_token: str,
-                tavily_api_key: str, mistral_api_key: str):
+def build_agent(
+    google_api_key: str,
+    groq_api_key: str,
+    pollinations_token: str,
+    tavily_api_key: str,
+    mistral_api_key: str,
+    deepseek_api_key: str = "",
+    kimi_api_key: str = "",
+    candidate_a_type: str = "gemini",
+    candidate_b_type: str = "groq",
+):
     workflow = StateGraph(AgentState)
 
     router_with_keys  = partial(router, google_api_key=google_api_key, groq_api_key=groq_api_key)
-    comparison_node   = partial(call_comparison_tool, google_api_key=google_api_key,
-                                groq_api_key=groq_api_key, mistral_api_key=mistral_api_key)
+    comparison_node   = partial(
+        call_comparison_tool,
+        google_api_key=google_api_key,
+        groq_api_key=groq_api_key,
+        mistral_api_key=mistral_api_key,
+        deepseek_api_key=deepseek_api_key,
+        kimi_api_key=kimi_api_key,
+        candidate_a_type=candidate_a_type,
+        candidate_b_type=candidate_b_type,
+    )
     image_node        = partial(call_image_tool, google_api_key=google_api_key,
                                 pollinations_token=pollinations_token)
     web_search_node   = partial(call_web_search_tool, tavily_api_key=tavily_api_key,

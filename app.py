@@ -189,9 +189,12 @@ pollinations_token = get_secret("POLLINATIONS_TOKEN")
 groq_api_key       = get_secret("GROQ_API_KEY")
 mistral_api_key    = get_secret("MISTRAL_API_KEY")
 tavily_api_key     = get_secret("TAVILY_API_KEY")
+deepseek_api_key   = get_secret("DEEPSEEK_API_KEY")
+kimi_api_key       = get_secret("KIMI_API_KEY")
 
-if not google_api_key and not groq_api_key:
-    st.warning("⚠️ Neither GOOGLE_API_KEY nor GROQ_API_KEY is configured. Please provide at least one API key in .streamlit/secrets.toml or environment variables.")
+if not google_api_key and not groq_api_key and not deepseek_api_key:
+    st.warning("⚠️ No primary LLM API key (Gemini, Groq, or DeepSeek) is configured. Please provide your keys in .streamlit/secrets.toml or environment variables.")
+
 
 
 # =================================================================================
@@ -594,6 +597,37 @@ with st.sidebar:
     st.metric("🧠 Memories stored", mem_count)
     st.caption(f"🔑 Memory ID: `{mask_session_id(SESSION_ID)}`")
 
+    # ── Arena Models (Mixture-of-Agents) ─────────────────────────
+    st.markdown("---")
+    st.markdown("### ⚔️ Arena Models (MoA)")
+    contender_options = ["Gemini 2.5 Flash", "Groq Llama-3.1", "DeepSeek Flash", "Kimi K3"]
+
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        contender_a = st.selectbox(
+            "Contender A",
+            contender_options,
+            index=0,
+            help="First candidate model competing in Mixture-of-Agents."
+        )
+    with col_m2:
+        default_b_idx = 2 if deepseek_api_key else 1
+        contender_b = st.selectbox(
+            "Contender B",
+            contender_options,
+            index=default_b_idx,
+            help="Second candidate model competing in Mixture-of-Agents."
+        )
+
+    model_type_map = {
+        "Gemini 2.5 Flash": "gemini",
+        "Groq Llama-3.1": "groq",
+        "DeepSeek Flash": "deepseek-flash",
+        "Kimi K3": "kimi-k3",
+    }
+    candidate_a_type = model_type_map.get(contender_a, "gemini")
+    candidate_b_type = model_type_map.get(contender_b, "groq")
+
     # ── Security status ───────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 🛡️ Security Status")
@@ -894,6 +928,10 @@ with chat_tab:
                     agent = build_agent(
                         google_api_key, groq_api_key, pollinations_token,
                         tavily_api_key, mistral_api_key,
+                        deepseek_api_key=deepseek_api_key,
+                        kimi_api_key=kimi_api_key,
+                        candidate_a_type=candidate_a_type,
+                        candidate_b_type=candidate_b_type,
                     )
 
                     # Build chat history from prior messages (excluding current turn)
@@ -911,10 +949,12 @@ with chat_tab:
                     memory_context = retrieve_relevant_memory(clean_prompt, session_id=SESSION_ID)
 
                     inputs = {
-                        "query":          clean_prompt,
-                        "history":        chat_history,
-                        "session_id":     SESSION_ID,
-                        "memory_context": memory_context,
+                        "query":            clean_prompt,
+                        "history":          chat_history,
+                        "session_id":       SESSION_ID,
+                        "memory_context":   memory_context,
+                        "candidate_a_type": candidate_a_type,
+                        "candidate_b_type": candidate_b_type,
                     }
 
                     try:

@@ -316,3 +316,106 @@ def test_format_judge_evaluation_json_and_latex():
     # Must not have leading code block indentations
     assert not cleaned.startswith("  ")
 
+
+# ===========================================================================
+# 6. DeepSeek & Kimi Provider Integrations & Arena Matchups
+# ===========================================================================
+
+def test_query_deepseek_retries_and_success():
+    """Verify query_deepseek retries on 429 and returns successful response."""
+    from agent import query_deepseek
+
+    mock_resp_429 = MagicMock(status_code=429, text="Rate limit")
+    mock_resp_200 = MagicMock(status_code=200)
+    mock_resp_200.json.return_value = {
+        "choices": [{"message": {"content": "DeepSeek response"}}]
+    }
+
+    with patch("requests.post", side_effect=[mock_resp_429, mock_resp_200]) as mock_post, \
+         patch("time.sleep"):
+        res = query_deepseek("Hi", "fake_deepseek_key", model="deepseek-flash")
+        assert mock_post.call_count == 2
+        assert res["model_name"] == "deepseek-flash"
+        assert res["content"] == "DeepSeek response"
+
+
+def test_query_kimi_retries_and_error():
+    """Verify query_kimi handles quota errors gracefully without raising unhandled exceptions."""
+    from agent import query_kimi
+
+    mock_resp_429 = MagicMock(status_code=429, text="Insufficient balance")
+
+    with patch("requests.post", return_value=mock_resp_429) as mock_post, \
+         patch("time.sleep"):
+        res = query_kimi("Hi", "fake_kimi_key", model="kimi-k3", max_retries=2)
+        assert res["model_name"] == "kimi-k3"
+        assert "error" in res
+        assert "Kimi API Error (429)" in res["error"]
+
+
+def test_comparison_tool_with_deepseek_and_kimi_matchup():
+    """Verify comparison tool runs DeepSeek vs Kimi arena matchup and parses winner correctly."""
+    from agent import comparison_and_evaluation_tool
+
+    with patch("agent.query_deepseek") as mock_ds, \
+         patch("agent.query_kimi") as mock_km, \
+         patch("agent.query_mistral_judge") as mock_judge, \
+         patch("agent.random.choice", return_value=True):  # A is DeepSeek, B is Kimi
+
+        mock_ds.return_value = {"model_name": "deepseek-flash", "content": "DeepSeek answer."}
+        mock_km.return_value = {"model_name": "kimi-k3", "content": "Kimi answer."}
+        mock_judge.return_value = '{"winner": "A", "reasoning": "DeepSeek was more concise."}'
+
+        res = comparison_and_evaluation_tool(
+            query="Explain gravity",
+            history=[],
+            google_api_key="fake_gkey",
+            groq_api_key="fake_groqkey",
+            mistral_api_key="fake_mistralkey",
+            deepseek_api_key="fake_dskey",
+            kimi_api_key="fake_kmkey",
+            candidate_a_type="deepseek-flash",
+            candidate_b_type="kimi-k3",
+        )
+
+        assert "🏆 Judged Best Answer (DeepSeek)" in res["display"]
+        assert "deepseek-flash" in res["display"]
+        assert "Other Response (Kimi)" in res["display"]
+        assert res["memory_text"] == "[deepseek-flash]: DeepSeek answer."
+
+
+def test_comparison_tool_auto_declares_when_deepseek_balance_error():
+    """If DeepSeek has HTTP 402 Insufficient Balance, Gemini is declared winner automatically."""
+    from agent import comparison_and_evaluation_tool
+
+    with patch("agent.ChatGoogleGenerativeAI") as mock_gemini_cls, \
+         patch("agent.query_deepseek") as mock_ds, \
+         patch("agent.query_mistral_judge") as mock_judge:
+
+        gemini_mock = MagicMock()
+        gemini_mock.invoke.return_value.content = "Gemini answer."
+        mock_gemini_cls.return_value = gemini_mock
+
+        mock_ds.return_value = {
+            "model_name": "deepseek-flash",
+            "error": "DeepSeek API Error (402): Insufficient Balance",
+        }
+
+        res = comparison_and_evaluation_tool(
+            query="Hello",
+            history=[],
+            google_api_key="fake_gkey",
+            groq_api_key="fake_groqkey",
+            mistral_api_key="fake_mistralkey",
+            deepseek_api_key="fake_dskey",
+            candidate_a_type="deepseek-flash",
+            candidate_b_type="gemini",
+        )
+
+        # Gemini wins automatically because DeepSeek had an error
+        assert "🏆 Judged Best Answer (Gemini)" in res["display"]
+        assert "DeepSeek (Failed)" in res["display"]
+        assert "Gemini selected automatically because DeepSeek encountered an error." in res["display"]
+        mock_judge.assert_not_called()
+
+
