@@ -39,7 +39,7 @@ flowchart TD
     Guardrails -- Passed --> Router{Intent Routing}
 
     subgraph "Routing Engine"
-        Router -- "< 0.1ms (RegEx)" --> SelfRouter[Self-Router]
+        Router -- "0.1ms (RegEx)" --> SelfRouter[Self-Router]
         Router -- "Fallback" --> LLMRouter[LLM Router]
     end
 
