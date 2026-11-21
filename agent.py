@@ -197,9 +197,11 @@ def query_gemini(
             return {"model_name": preferred_model, "error": f"Gemini Error: {e}"}
 
     # 2. Production execution: direct REST API via requests.post with strict HTTP timeout
-    # gemini-2.5-flash has 1,500 req/day on free tier (~1.2s latency), whereas
-    # gemini-3.8-flash is capped at 20 req/day on free tier and frequently 504/429s.
-    candidate_models = ["gemini-2.5-flash", "gemini-3.8-flash"]
+    # Verified active Free-Tier models with ~1.3s-1.6s latency:
+    #   1. gemini-2.5-flash (Primary production free-tier model, 1.4s)
+    #   2. gemini-3.5-flash-lite (Fast 3.5 Lite free-tier model, 1.3s)
+    #   3. gemini-flash-lite-latest (Auto-aliased free-tier Lite fallback, 1.6s)
+    candidate_models = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
     req_timeout = timeout or 12
     last_error = "Gemini API error."
 
