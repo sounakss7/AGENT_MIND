@@ -62,6 +62,8 @@ _BLOCKED_OR_ERROR_PREFIXES = (
 # ---------------------------------------------------------------------------
 _embedder: Any = None
 _qdrant:   Any        = None
+_qdrant_unreachable: bool = False
+_qdrant_last_fail_ts: float = 0.0
 
 
 def _get_embedder() -> SentenceTransformer:
@@ -73,26 +75,40 @@ def _get_embedder() -> SentenceTransformer:
 
 
 def _get_client() -> QdrantClient:
-    global _qdrant
-    if _qdrant is None:
-        try:
-            import streamlit as st
-            qdrant_url     = st.secrets["QDRANT_URL"]
-            qdrant_api_key = st.secrets["QDRANT_API_KEY"]
-        except Exception:
-            qdrant_url     = os.environ.get("QDRANT_URL", "")
-            qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
+    global _qdrant, _qdrant_unreachable, _qdrant_last_fail_ts
+    if _qdrant is not None:
+        return _qdrant
 
-        if not qdrant_url or not qdrant_api_key:
-            raise ValueError(
-                "QDRANT_URL and QDRANT_API_KEY must be set in Streamlit secrets "
-                "or environment variables."
-            )
+    import time
+    if _qdrant_unreachable and (time.time() - _qdrant_last_fail_ts < 120):
+        raise ConnectionError("Qdrant Cloud circuit breaker active (cluster unreachable).")
 
+    try:
+        import streamlit as st
+        qdrant_url     = st.secrets["QDRANT_URL"]
+        qdrant_api_key = st.secrets["QDRANT_API_KEY"]
+    except Exception:
+        qdrant_url     = os.environ.get("QDRANT_URL", "")
+        qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
+
+    if not qdrant_url or not qdrant_api_key:
+        raise ValueError(
+            "QDRANT_URL and QDRANT_API_KEY must be set in Streamlit secrets "
+            "or environment variables."
+        )
+
+    try:
         print(f"[VectorMemory] Connecting to Qdrant Cloud: {qdrant_url}")
-        _qdrant = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        _ensure_collection(_qdrant)
-    return _qdrant
+        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        _ensure_collection(client)
+        _qdrant = client
+        _qdrant_unreachable = False
+        return _qdrant
+    except Exception as e:
+        _qdrant = None
+        _qdrant_unreachable = True
+        _qdrant_last_fail_ts = time.time()
+        raise e
 
 
 def _ensure_collection(client: QdrantClient) -> None:

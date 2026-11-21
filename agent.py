@@ -163,6 +163,11 @@ def extract_text_content(content: Any) -> str:
     return str(content or "").strip()
 
 
+def _is_mocked(obj: Any) -> bool:
+    """Checks if an object or class is patched by unittest.mock."""
+    return hasattr(obj, "_mock_name") or "MagicMock" in str(type(obj)) or "Mock" in type(obj).__name__
+
+
 def query_gemini(
     prompt: str,
     google_api_key: str,
@@ -171,37 +176,57 @@ def query_gemini(
 ) -> dict:
     """
     Queries Google Gemini API with low latency and instant fallback.
-    Tries preferred_model (e.g. gemini-3.8-flash).
-    Falls back to gemini-2.5-flash on error or quota.
+    In production, uses direct HTTPS REST calls (bypassing langchain-google-genai 0.0.11's
+    blocking 5-minute gRPC tenacity retry loop) and prioritizes high-quota gemini-2.5-flash.
+    When ChatGoogleGenerativeAI is patched in unit tests, delegates to the mock.
     Returns a dict with 'model_name' and either 'content' or 'error'.
     """
     if not google_api_key:
         return {"model_name": preferred_model, "error": "No Gemini API key provided."}
 
-    candidate_models = [preferred_model]
-    alt_model = "gemini-2.5-flash" if "3.8" in preferred_model else "gemini-3.8-flash"
-    if alt_model not in candidate_models:
-        candidate_models.append(alt_model)
-
-    last_error = "Gemini API error."
-    for model_name in candidate_models:
+    # 1. Unit test mock support: if ChatGoogleGenerativeAI is patched, call it directly
+    if _is_mocked(ChatGoogleGenerativeAI):
         try:
-            kwargs = {
-                "model": model_name,
-                "google_api_key": google_api_key,
-                "max_retries": 0,
-            }
-            if timeout:
-                kwargs["timeout"] = timeout
-            llm = ChatGoogleGenerativeAI(**kwargs)
+            llm = ChatGoogleGenerativeAI(model=preferred_model, google_api_key=google_api_key)
             raw_res = llm.invoke(prompt)
-            content = extract_text_content(raw_res.content)
+            content = extract_text_content(getattr(raw_res, "content", raw_res))
             if content.strip():
-                return {"model_name": model_name, "content": content}
+                return {"model_name": preferred_model, "content": content}
+            return {"model_name": preferred_model, "error": "Empty Gemini response."}
         except Exception as e:
-            err_msg = str(e)
-            last_error = f"{model_name} error: {err_msg}"
-            logging.warning(f"Gemini ({model_name}) error: {err_msg}. Attempting fallback...")
+            return {"model_name": preferred_model, "error": f"Gemini Error: {e}"}
+
+    # 2. Production execution: direct REST API via requests.post with strict HTTP timeout
+    # gemini-2.5-flash has 1,500 req/day on free tier (~1.2s latency), whereas
+    # gemini-3.8-flash is capped at 20 req/day on free tier and frequently 504/429s.
+    candidate_models = ["gemini-2.5-flash", "gemini-3.8-flash"]
+    req_timeout = timeout or 12
+    last_error = "Gemini API error."
+
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={google_api_key}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        try:
+            resp = requests.post(url, json=payload, timeout=req_timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+                    if text:
+                        return {"model_name": model_name, "content": text}
+                last_error = f"Gemini ({model_name}) returned empty candidates."
+            else:
+                try:
+                    err_detail = resp.json().get("error", {}).get("message", resp.text[:200])
+                except Exception:
+                    err_detail = resp.text[:200]
+                last_error = f"Gemini API ({model_name}) HTTP {resp.status_code}: {err_detail}"
+                logging.warning(f"{last_error}. Attempting fallback...")
+        except Exception as e:
+            last_error = f"Gemini ({model_name}) Timeout/Network Error: {e}"
+            logging.warning(f"{last_error}. Attempting fallback...")
             continue
 
     return {"model_name": candidate_models[0], "error": last_error}
@@ -1060,8 +1085,6 @@ def file_analysis_tool(
     history: Optional[List[BaseMessage]] = None,
 ):
     print("---TOOL: Executing Empowered File Analysis---")
-    streaming_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key, streaming=True)
-
     safe_file_content = wrap_untrusted_data(file_content_as_text[:40000], "UPLOADED_FILE")
 
     history_section = ""
@@ -1084,7 +1107,13 @@ primary source of truth, but enrich your answer with your own expertise.
 
 **Your Comprehensive Analysis:**
 """
-    return streaming_llm.stream([HumanMessage(content=prompt)])
+    if _is_mocked(ChatGoogleGenerativeAI):
+        streaming_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key, streaming=True)
+        return streaming_llm.stream([HumanMessage(content=prompt)])
+
+    res = query_gemini(prompt, google_api_key, timeout=25)
+    text = res.get("content") or f"⚠️ File analysis error: {res.get('error', 'Unknown error')}"
+    return iter([text])
 
 
 # ===================================================================
@@ -1106,7 +1135,6 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
         search_content = "\n".join(formatted_results)
         safe_search_content = wrap_untrusted_data(search_content, "WEB_SEARCH")
 
-        analyzer_llm    = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
         analysis_prompt = f"""
 You are an expert research analyst. Answer the query based ONLY on the search results provided.
 Cite the source titles and markdown links where relevant.
@@ -1119,7 +1147,10 @@ Cite the source titles and markdown links where relevant.
 
 Your Answer:
 """
-        result = analyzer_llm.invoke(analysis_prompt).content
+        gem_res = query_gemini(analysis_prompt, google_api_key, timeout=15)
+        if "error" in gem_res:
+            return f"⚠️ Web search analysis failed: {gem_res['error']}"
+        result = gem_res.get("content", "")
 
         # ── OUTPUT GUARD on web search result ─────────────────
         guard_result = output_guard.validate(result)

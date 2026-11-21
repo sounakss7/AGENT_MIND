@@ -938,50 +938,45 @@ with chat_tab:
                     key=f"download_btn_{i}",
                 )
 
-    # ── Agent async runner ────────────────────────────────────────
-    async def run_agent_and_capture_trajectory(agent, inputs):
+    # ── Agent runner (synchronous, compatible with LangGraph 0.0.30 & 1.x) ────
+    def run_agent_and_capture_trajectory_sync(agent, inputs):
         trace_steps     = []
-        current_step    = {}
         final_response  = None
         memory_text     = None
         tool_used       = "N/A"
         comparison_data = None
 
         try:
-            async for event in agent.astream_events(inputs, version="v1"):
-                kind = event["event"]
-                name = event.get("name", "")
-                if kind == "on_chain_start" and name != "LangGraph":
-                    current_step = {
-                        "name":  name,
-                        "input": event["data"].get("input"),
-                        "output": None,
-                    }
-                    if   name == "comparison_chat":   tool_used = "Comparison"
-                    elif name == "image_generator":   tool_used = "Image Gen"
-                    elif name == "web_search":        tool_used = "Web Search"
+            for step_chunk in agent.stream(inputs):
+                if not isinstance(step_chunk, dict):
+                    continue
+                for node_name, output in step_chunk.items():
+                    if node_name == "__end__":
+                        continue
+                    trace_steps.append({
+                        "name":   node_name,
+                        "input":  {"query": inputs.get("query")},
+                        "output": output,
+                    })
+                    if   node_name == "comparison_chat": tool_used = "Comparison"
+                    elif node_name == "image_generator": tool_used = "Image Gen"
+                    elif node_name == "web_search":      tool_used = "Web Search"
 
-                if kind == "on_chain_end" and name != "LangGraph":
-                    output = event["data"].get("output")
-                    if current_step.get("name") == name:
-                        current_step["output"] = output
-                        trace_steps.append(current_step)
-                        current_step = {}
                     if isinstance(output, dict):
-                        if "final_response" in output and output["final_response"]:
+                        if "final_response" in output and output["final_response"] is not None:
                             final_response = output["final_response"]
-                        if "memory_text" in output and output["memory_text"]:
+                        if "memory_text" in output and output["memory_text"] is not None:
                             memory_text = output["memory_text"]
-                        if "comparison_data" in output and output["comparison_data"]:
+                        if "comparison_data" in output and output["comparison_data"] is not None:
                             comparison_data = output["comparison_data"]
         except Exception as stream_err:
-            logging.warning(f"astream_events encountered warning ({stream_err}), verifying output...")
+            logging.warning(f"agent.stream encountered warning ({stream_err}), verifying output...")
 
         # Robust execution guarantee: if final_response was not captured via stream, invoke directly!
         if final_response is None:
-            logging.info("Falling back to agent.ainvoke to ensure complete response...")
+            logging.info("Falling back to agent.invoke to ensure complete response...")
             try:
-                direct_output = await agent.ainvoke(inputs)
+                direct_output = agent.invoke(inputs)
                 if isinstance(direct_output, dict):
                     final_response  = direct_output.get("final_response")
                     memory_text     = direct_output.get("memory_text")
@@ -992,7 +987,7 @@ with chat_tab:
                         elif route == "image_generator": tool_used = "Image Gen"
                         elif route == "web_search": tool_used = "Web Search"
             except Exception as invoke_err:
-                logging.error(f"agent.ainvoke error: {invoke_err}")
+                logging.error(f"agent.invoke error: {invoke_err}")
                 final_response = f"### ⚠️ Execution Error\n\nThe multi-agent system encountered an unexpected error: `{invoke_err}`"
 
         if memory_text is None and isinstance(final_response, str):
@@ -1048,6 +1043,8 @@ with chat_tab:
         # PROCEED WITH CLEAN PROMPT
         # ════════════════════════════════════════════════════════
         st.session_state.messages.append({"role": "user", "text": clean_prompt})
+        with st.chat_message("user"):
+            st.markdown(clean_prompt)
 
         for cache_key in ["history_cache", "audit_cache"]:
             if cache_key in st.session_state:
@@ -1152,8 +1149,8 @@ with chat_tab:
                     }
 
                     try:
-                        final_response, trace_steps, tool_used_key, memory_text, comparison_data = asyncio.run(
-                            run_agent_and_capture_trajectory(agent, inputs)
+                        final_response, trace_steps, tool_used_key, memory_text, comparison_data = (
+                            run_agent_and_capture_trajectory_sync(agent, inputs)
                         )
                     except Exception as e:
                         logging.error(f"Agent execution error: {e}")
