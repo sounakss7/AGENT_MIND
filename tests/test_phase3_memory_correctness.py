@@ -147,7 +147,7 @@ def test_comparison_tool_returns_distilled_memory_and_display():
         assert "### Other Response" in result["display"]
 
         # Distilled memory has only the winning answer and model tag
-        assert result["memory_text"].startswith("[gemini-3.8-flash]:")
+        assert result["memory_text"].startswith("[gemini-3.5-flash-lite]:")
         assert "Gemini answer: sorting takes O(N log N) time." in result["memory_text"]
         assert "### 🧠 Judge's Evaluation" not in result["memory_text"]
         assert "Other Response" not in result["memory_text"]
@@ -158,7 +158,7 @@ def test_call_comparison_tool_propagates_memory_text():
     """Verify call_comparison_tool returns both final_response and memory_text in node output."""
     mock_tool_result = {
         "display": "Full Markdown with comparison",
-        "memory_text": "[gemini-3.8-flash]: Winner text",
+        "memory_text": "[gemini-3.5-flash-lite]: Winner text",
     }
     with patch("agent.comparison_and_evaluation_tool", return_value=mock_tool_result):
         state: AgentState = {
@@ -169,7 +169,7 @@ def test_call_comparison_tool_propagates_memory_text():
         }
         output = call_comparison_tool(state, "gkey", "groqkey", "mistralkey")
         assert output["final_response"] == "Full Markdown with comparison"
-        assert output["memory_text"] == "[gemini-3.8-flash]: Winner text"
+        assert output["memory_text"] == "[gemini-3.5-flash-lite]: Winner text"
 
 
 def test_single_memory_retrieval_propagation():
@@ -202,7 +202,7 @@ def test_chat_history_uses_distilled_memory_text():
         {
             "role": "assistant",
             "text": "### 🏆 Judged Best Answer (Gemini)\nPython is great.\n### 🧠 Judge's Evaluation\nReasoning...",
-            "memory_text": "[gemini-3.8-flash]: Python is great.",
+            "memory_text": "[gemini-3.5-flash-lite]: Python is great.",
         },
         {"role": "user", "text": "Can you show an example?"},
     ]
@@ -222,5 +222,5 @@ def test_chat_history_uses_distilled_memory_text():
     assert chat_history[0].content == "What is Python?"
     assert isinstance(chat_history[1], AIMessage)
     # Must use distilled memory_text, not the raw markdown with judge critique
-    assert chat_history[1].content == "[gemini-3.8-flash]: Python is great."
+    assert chat_history[1].content == "[gemini-3.5-flash-lite]: Python is great."
     assert "Judge's Evaluation" not in chat_history[1].content

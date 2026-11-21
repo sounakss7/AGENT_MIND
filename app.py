@@ -619,7 +619,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚔️ Arena Models (MoA)")
     contender_options = [
-        "Gemini 3.8 Flash",
+        "Gemini 3.5 Flash-Lite",
         "Groq GPT-OSS 120B",
         "Groq GPT-OSS 20B",
         "DeepSeek Flash",
@@ -643,6 +643,7 @@ with st.sidebar:
         )
 
     model_type_map = {
+        "Gemini 3.5 Flash-Lite": "gemini",
         "Gemini 3.8 Flash": "gemini",
         "Gemini 2.5 Flash": "gemini",
         "Groq GPT-OSS 120B": "groq",
@@ -657,7 +658,7 @@ with st.sidebar:
     st.markdown("### ⚖️ Arena Judge & Evaluation")
     judge_options = [
         "Mistral AI (Impartial External Judge)",
-        "Gemini 3.8 Flash (Analytical Judge)",
+        "Gemini 3.5 Flash-Lite (Analytical Judge)",
         "Groq GPT-OSS 120B (High-Speed Judge)",
         "🧑 Human Judge (You Decide!)",
     ]
@@ -669,6 +670,7 @@ with st.sidebar:
     )
     judge_map = {
         "Mistral AI (Impartial External Judge)": "mistral",
+        "Gemini 3.5 Flash-Lite (Analytical Judge)": "gemini",
         "Gemini 3.8 Flash (Analytical Judge)": "gemini",
         "Gemini 2.5 Flash (Analytical Judge)": "gemini",
         "Groq GPT-OSS 120B (High-Speed Judge)": "groq",
@@ -680,7 +682,7 @@ with st.sidebar:
     st.markdown("### 🧭 Query Routing Engine")
     routing_options = [
         "⚡ Self-Routing Engine (Local, <1ms)",
-        "🌐 Gemini 3.8 Flash (LLM Router)",
+        "🌐 Gemini 3.5 Flash-Lite (LLM Router)",
         "🚀 Groq GPT-OSS 120B (LLM Router)",
     ]
     routing_choice = st.selectbox(
@@ -691,6 +693,7 @@ with st.sidebar:
     )
     routing_map = {
         "⚡ Self-Routing Engine (Local, <1ms)": "self",
+        "🌐 Gemini 3.5 Flash-Lite (LLM Router)": "gemini",
         "🌐 Gemini 3.8 Flash (LLM Router)": "gemini",
         "🌐 Gemini 2.5 Flash (LLM Router)": "gemini",
         "🚀 Groq GPT-OSS 120B (LLM Router)": "groq",

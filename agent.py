@@ -56,7 +56,7 @@ from security_guard import input_guard, output_guard, audit_logger, wrap_untrust
 # MODEL BENCHMARKS MATRIX
 # =======================================================================================
 MODEL_BENCHMARKS = {
-    "Gemini 3.8 Flash": {
+    "Gemini 3.5 Flash-Lite": {
         "provider": "Google",
         "mmlu": "82.0%",
         "math": "67.7%",
@@ -171,13 +171,13 @@ def _is_mocked(obj: Any) -> bool:
 def query_gemini(
     prompt: str,
     google_api_key: str,
-    preferred_model: str = "gemini-3.8-flash",
+    preferred_model: str = "gemini-3.5-flash-lite",
     timeout: Optional[int] = None,
 ) -> dict:
     """
     Queries Google Gemini API with low latency and instant fallback.
     In production, uses direct HTTPS REST calls (bypassing langchain-google-genai 0.0.11's
-    blocking 5-minute gRPC tenacity retry loop) and prioritizes high-quota gemini-2.5-flash.
+    blocking 5-minute gRPC tenacity retry loop) and prioritizes high-speed gemini-3.5-flash-lite.
     When ChatGoogleGenerativeAI is patched in unit tests, delegates to the mock.
     Returns a dict with 'model_name' and either 'content' or 'error'.
     """
@@ -197,11 +197,10 @@ def query_gemini(
             return {"model_name": preferred_model, "error": f"Gemini Error: {e}"}
 
     # 2. Production execution: direct REST API via requests.post with strict HTTP timeout
-    # Verified active Free-Tier models with ~1.3s-1.6s latency:
-    #   1. gemini-2.5-flash (Primary production free-tier model, 1.4s)
-    #   2. gemini-3.5-flash-lite (Fast 3.5 Lite free-tier model, 1.3s)
-    #   3. gemini-flash-lite-latest (Auto-aliased free-tier Lite fallback, 1.6s)
-    candidate_models = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+    # Verified active Free-Tier models:
+    #   1. gemini-3.5-flash-lite (Primary fast 3.5 Lite free-tier model, ~1.3s)
+    #   2. gemini-flash-lite-latest (Auto-aliased free-tier Lite fallback, ~1.6s)
+    candidate_models = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
     req_timeout = timeout or 12
     last_error = "Gemini API error."
 
@@ -557,8 +556,8 @@ Use the long-term memory only when the user refers to something discussed in a p
 
     def _safe_gemini():
         if not google_api_key:
-            return {"model_name": "gemini-3.8-flash", "error": "Gemini API key not configured."}
-        return query_gemini(full_prompt_with_context, google_api_key, preferred_model="gemini-3.8-flash")
+            return {"model_name": "gemini-3.5-flash-lite", "error": "Gemini API key not configured."}
+        return query_gemini(full_prompt_with_context, google_api_key, preferred_model="gemini-3.5-flash-lite")
 
     def _execute_model(m_type: str, other_m_type: str = ""):
         mt = m_type.lower()
@@ -755,8 +754,8 @@ Instructions:
         judge_source = "Arbitration Judge"
 
         if judge_type == "gemini":
-            judge_source = "Gemini"
-            gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-2.5-flash", timeout=12)
+            judge_source = "Gemini 3.5 Flash-Lite"
+            gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-3.5-flash-lite", timeout=12)
             if "content" in gem_j:
                 judgment = gem_j["content"]
         elif judge_type == "groq":
@@ -774,7 +773,7 @@ Instructions:
         if not judgment or judgment.startswith("Error:"):
             logging.warning(f"Primary judge ({judge_type}) failed. Falling back to Gemini as secondary judge...")
             if google_api_key:
-                gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-3.8-flash")
+                gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-3.5-flash-lite")
                 if isinstance(gem_j, dict) and "content" in gem_j:
                     judgment = gem_j["content"]
                     judge_source = "Gemini (Fallback Judge)"
@@ -992,7 +991,7 @@ vibrant image generation description (Subject, Style, Lighting, Technicals).
 
 User's prompt: "{prompt}"
 """
-        enhancer_res = query_gemini(enhancer_prompt, google_api_key, preferred_model="gemini-3.8-flash", timeout=12)
+        enhancer_res = query_gemini(enhancer_prompt, google_api_key, preferred_model="gemini-3.5-flash-lite", timeout=12)
         final_prompt = enhancer_res.get("content", prompt).strip()
         encoded_prompt = quote_plus(final_prompt)
         url            = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=gptimage"
@@ -1110,7 +1109,7 @@ primary source of truth, but enrich your answer with your own expertise.
 **Your Comprehensive Analysis:**
 """
     if _is_mocked(ChatGoogleGenerativeAI):
-        streaming_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key, streaming=True)
+        streaming_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", google_api_key=google_api_key, streaming=True)
         return streaming_llm.stream([HumanMessage(content=prompt)])
 
     res = query_gemini(prompt, google_api_key, timeout=25)

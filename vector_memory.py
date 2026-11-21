@@ -57,11 +57,8 @@ _BLOCKED_OR_ERROR_PREFIXES = (
     "Failed to generate image",
 )
 
-# ---------------------------------------------------------------------------
-# SINGLETON HELPERS
-# ---------------------------------------------------------------------------
 _embedder: Any = None
-_qdrant:   Any        = None
+_qdrant: Any = None
 _qdrant_unreachable: bool = False
 _qdrant_last_fail_ts: float = 0.0
 

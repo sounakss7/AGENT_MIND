@@ -7,7 +7,7 @@ flowchart TD
     InputGuard -- "Passes" --> CheckFile{📂 File Uploaded?}
     
     %% Routing logic %%
-    CheckFile -- Yes --> FileTool[🔍 File Analysis Tool\n Gemini 3.8 Flash]
+    CheckFile -- Yes --> FileTool[🔍 File Analysis Tool\n Gemini 3.5 Flash-Lite]
     CheckFile -- No --> Context[🧠 Fetch Context\n short-term & Qdrant long-term]
     
     Context --> Router{🤖 LangGraph Router}
@@ -18,7 +18,7 @@ flowchart TD
     Router -- "Web Search" --> Web[🌐 Web Search Tool]
     
     %% Compare Tool Details %%
-    Compare --> Gemini[🧠 Gemini 2.5]
+    Compare --> Gemini[🧠 Gemini 3.5 Flash-Lite]
     Compare --> Groq[⚡ Groq Llama/GPT]
     Gemini & Groq --> Mistral[⚖️ Mistral Judge]
     
