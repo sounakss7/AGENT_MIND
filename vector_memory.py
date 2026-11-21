@@ -19,18 +19,26 @@ import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance,
-    VectorParams,
-    PointStruct,
-    Filter,
-    FieldCondition,
-    MatchValue,
-    PayloadSchemaType,
-    ScrollRequest,
-)
-from sentence_transformers import SentenceTransformer
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import (
+        Distance,
+        VectorParams,
+        PointStruct,
+        Filter,
+        FieldCondition,
+        MatchValue,
+        PayloadSchemaType,
+        ScrollRequest,
+    )
+except ImportError:
+    QdrantClient = None
+    Distance = VectorParams = PointStruct = Filter = FieldCondition = MatchValue = PayloadSchemaType = ScrollRequest = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 # ---------------------------------------------------------------------------
 # CONFIG
@@ -52,8 +60,8 @@ _BLOCKED_OR_ERROR_PREFIXES = (
 # ---------------------------------------------------------------------------
 # SINGLETON HELPERS
 # ---------------------------------------------------------------------------
-_embedder: SentenceTransformer | None = None
-_qdrant:   QdrantClient | None        = None
+_embedder: Any = None
+_qdrant:   Any        = None
 
 
 def _get_embedder() -> SentenceTransformer:

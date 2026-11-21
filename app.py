@@ -21,7 +21,11 @@ from collections import defaultdict
 from gtts import gTTS
 
 # --- LangChain Schema for Memory ---
-from langchain.schema import HumanMessage, AIMessage
+try:
+    from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+except ImportError:
+    from langchain.schema import HumanMessage, AIMessage
+    BaseMessage = object
 
 # --- Import the Agent Logic ---
 from agent import (
@@ -943,31 +947,53 @@ with chat_tab:
         tool_used       = "N/A"
         comparison_data = None
 
-        async for event in agent.astream_events(inputs, version="v1"):
-            kind = event["event"]
-            if kind == "on_chain_start" and event["name"] != "LangGraph":
-                current_step = {
-                    "name":  event["name"],
-                    "input": event["data"].get("input"),
-                    "output": None,
-                }
-                if   event["name"] == "comparison_chat":   tool_used = "Comparison"
-                elif event["name"] == "image_generator":   tool_used = "Image Gen"
-                elif event["name"] == "web_search":        tool_used = "Web Search"
+        try:
+            async for event in agent.astream_events(inputs, version="v1"):
+                kind = event["event"]
+                name = event.get("name", "")
+                if kind == "on_chain_start" and name != "LangGraph":
+                    current_step = {
+                        "name":  name,
+                        "input": event["data"].get("input"),
+                        "output": None,
+                    }
+                    if   name == "comparison_chat":   tool_used = "Comparison"
+                    elif name == "image_generator":   tool_used = "Image Gen"
+                    elif name == "web_search":        tool_used = "Web Search"
 
-            if kind == "on_chain_end" and event["name"] != "LangGraph":
-                output = event["data"].get("output")
-                if current_step.get("name") == event["name"]:
-                    current_step["output"] = output
-                    trace_steps.append(current_step)
-                    current_step = {}
-                if isinstance(output, dict):
-                    if "final_response" in output:
-                        final_response = output["final_response"]
-                    if "memory_text" in output:
-                        memory_text = output["memory_text"]
-                    if "comparison_data" in output:
-                        comparison_data = output["comparison_data"]
+                if kind == "on_chain_end" and name != "LangGraph":
+                    output = event["data"].get("output")
+                    if current_step.get("name") == name:
+                        current_step["output"] = output
+                        trace_steps.append(current_step)
+                        current_step = {}
+                    if isinstance(output, dict):
+                        if "final_response" in output and output["final_response"]:
+                            final_response = output["final_response"]
+                        if "memory_text" in output and output["memory_text"]:
+                            memory_text = output["memory_text"]
+                        if "comparison_data" in output and output["comparison_data"]:
+                            comparison_data = output["comparison_data"]
+        except Exception as stream_err:
+            logging.warning(f"astream_events encountered warning ({stream_err}), verifying output...")
+
+        # Robust execution guarantee: if final_response was not captured via stream, invoke directly!
+        if final_response is None:
+            logging.info("Falling back to agent.ainvoke to ensure complete response...")
+            try:
+                direct_output = await agent.ainvoke(inputs)
+                if isinstance(direct_output, dict):
+                    final_response  = direct_output.get("final_response")
+                    memory_text     = direct_output.get("memory_text")
+                    comparison_data = direct_output.get("comparison_data")
+                    if not tool_used or tool_used == "N/A":
+                        route = direct_output.get("route", "")
+                        if route == "comparison_chat": tool_used = "Comparison"
+                        elif route == "image_generator": tool_used = "Image Gen"
+                        elif route == "web_search": tool_used = "Web Search"
+            except Exception as invoke_err:
+                logging.error(f"agent.ainvoke error: {invoke_err}")
+                final_response = f"### ⚠️ Execution Error\n\nThe multi-agent system encountered an unexpected error: `{invoke_err}`"
 
         if memory_text is None and isinstance(final_response, str):
             memory_text = final_response
@@ -1163,11 +1189,12 @@ with chat_tab:
                             if out_result.event_type == "OUTPUT_REDACTED":
                                 st.caption("🛡️ *Some sensitive content was automatically redacted.*")
 
-                            # Only save memory if response was not blocked and succeeded
+                            # Only save memory if response was not blocked and succeeded without error
                             # Use distilled memory_text (e.g. "[Gemini]: ...") instead of raw MoA output
-                            assistant_memory = memory_text or final_response
-                            save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
-                            save_memory(role="assistant", content=assistant_memory, session_id=SESSION_ID)
+                            if "### ⚠️ Both Candidate Models Failed" not in final_response and not final_response.startswith("### ⚠️ Execution Error"):
+                                assistant_memory = memory_text or final_response
+                                save_memory(role="user", content=clean_prompt, session_id=SESSION_ID)
+                                save_memory(role="assistant", content=assistant_memory, session_id=SESSION_ID)
 
                         st.session_state.messages.append(
                             {

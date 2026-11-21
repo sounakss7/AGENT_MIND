@@ -21,6 +21,12 @@ import secrets
 from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Qdrant constants
 # Dummy zero-vectors are used for audit points (no semantic search needed).

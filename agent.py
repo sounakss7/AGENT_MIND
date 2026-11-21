@@ -8,11 +8,17 @@ from io import BytesIO
 from PIL import Image
 from typing import TypedDict, Optional, List, Dict, Any, Tuple
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage, AIMessage, BaseMessage
+try:
+    from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+except ImportError:
+    from langchain.schema import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 import concurrent.futures
 from functools import partial
-from tavily import TavilyClient
+try:
+    from tavily import TavilyClient
+except ImportError:
+    TavilyClient = None
 from urllib.parse import quote_plus
 import logging
 import hashlib
@@ -116,16 +122,89 @@ MODEL_BENCHMARKS = {
 # HELPER FUNCTIONS
 # =======================================================================================
 
-def format_history(history: List[BaseMessage]) -> str:
+def format_history(history: List[Any]) -> str:
     """Formats the last few turns of history into a string for the LLM."""
     if not history:
         return "No previous context."
     recent_history = history[-4:]
     formatted = ""
     for msg in recent_history:
-        role = "User" if isinstance(msg, HumanMessage) else "Assistant"
-        formatted += f"{role}: {msg.content}\n"
+        is_user = isinstance(msg, HumanMessage) or getattr(msg, "__class__", None).__name__ == "HumanMessage"
+        role = "User" if is_user else "Assistant"
+        content = getattr(msg, "content", str(msg))
+        formatted += f"{role}: {content}\n"
     return formatted
+
+
+def extract_text_content(content: Any) -> str:
+    """
+    Safely extracts plain string text from any LLM response format.
+    Handles str, list of chunks/dicts (common in Gemini 3.8 flash / LangChain 4+),
+    message objects, and dictionaries.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            elif isinstance(item, str):
+                parts.append(item)
+            elif hasattr(item, "text"):
+                parts.append(str(item.text))
+            elif isinstance(item, dict) and "content" in item:
+                parts.append(str(item["content"]))
+            else:
+                parts.append(str(item))
+        return "".join(parts).strip()
+    if hasattr(content, "text"):
+        return str(content.text)
+    return str(content or "").strip()
+
+
+def query_gemini(
+    prompt: str,
+    google_api_key: str,
+    preferred_model: str = "gemini-3.8-flash",
+    timeout: Optional[int] = None,
+) -> dict:
+    """
+    Queries Google Gemini API with low latency and instant fallback.
+    Tries preferred_model (e.g. gemini-3.8-flash).
+    Falls back to gemini-2.5-flash on error or quota.
+    Returns a dict with 'model_name' and either 'content' or 'error'.
+    """
+    if not google_api_key:
+        return {"model_name": preferred_model, "error": "No Gemini API key provided."}
+
+    candidate_models = [preferred_model]
+    alt_model = "gemini-2.5-flash" if "3.8" in preferred_model else "gemini-3.8-flash"
+    if alt_model not in candidate_models:
+        candidate_models.append(alt_model)
+
+    last_error = "Gemini API error."
+    for model_name in candidate_models:
+        try:
+            kwargs = {
+                "model": model_name,
+                "google_api_key": google_api_key,
+                "max_retries": 0,
+            }
+            if timeout:
+                kwargs["timeout"] = timeout
+            llm = ChatGoogleGenerativeAI(**kwargs)
+            raw_res = llm.invoke(prompt)
+            content = extract_text_content(raw_res.content)
+            if content.strip():
+                return {"model_name": model_name, "content": content}
+        except Exception as e:
+            err_msg = str(e)
+            last_error = f"{model_name} error: {err_msg}"
+            logging.warning(f"Gemini ({model_name}) error: {err_msg}. Attempting fallback...")
+            continue
+
+    return {"model_name": candidate_models[0], "error": last_error}
 
 
 # Groq deprecated llama-3.3-70b-versatile and llama-3.1-8b-instant on Aug 16 2026.
@@ -173,7 +252,7 @@ def query_groq(prompt: str, groq_api_key: str, max_retries: int = 3, timeout: in
                 resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
-                    return {"model_name": model, "content": content}
+                    return {"model_name": model, "content": extract_text_content(content)}
                 elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                     logging.warning(f"Groq ({model}) HTTP {resp.status_code}. Retrying in {delay}s...")
                     time.sleep(delay)
@@ -201,8 +280,8 @@ def query_deepseek(
     prompt: str,
     deepseek_api_key: str,
     model: str = "deepseek-flash",
-    max_retries: int = 3,
-    timeout: int = 30,
+    max_retries: int = 1,
+    timeout: int = 10,
 ) -> dict:
     """
     Queries DeepSeek API (OpenAI compatible) with retries and exponential backoff.
@@ -216,16 +295,16 @@ def query_deepseek(
     headers = {"Authorization": f"Bearer {deepseek_api_key}", "Content-Type": "application/json"}
     data = {"model": actual_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 2048}
 
-    delay = 1.0
-    for attempt in range(max_retries):
+    delay = 0.5
+    for attempt in range(max_retries + 1):
         try:
             resp = requests.post("https://api.deepseek.com/chat/completions", json=data, headers=headers, timeout=timeout)
             if resp.status_code == 200:
                 content = resp.json()["choices"][0]["message"]["content"]
-                return {"model_name": model, "content": content}
+                return {"model_name": model, "content": extract_text_content(content)}
             elif resp.status_code == 402:
                 return {"model_name": model, "error": "DeepSeek API Error (402): Insufficient Balance"}
-            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+            elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
                 logging.warning(f"DeepSeek API {resp.status_code} received. Retrying in {delay}s...")
                 time.sleep(delay)
                 delay *= 2
@@ -233,7 +312,7 @@ def query_deepseek(
             else:
                 return {"model_name": model, "error": f"DeepSeek API Error ({resp.status_code}): {resp.text}"}
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            if attempt < max_retries - 1:
+            if attempt < max_retries:
                 logging.warning(f"DeepSeek network error: {e}. Retrying in {delay}s...")
                 time.sleep(delay)
                 delay *= 2
@@ -249,8 +328,8 @@ def query_kimi(
     prompt: str,
     kimi_api_key: str,
     model: str = "kimi-k3",
-    max_retries: int = 3,
-    timeout: int = 30,
+    max_retries: int = 1,
+    timeout: int = 10,
 ) -> dict:
     """
     Queries Kimi / Moonshot API (OpenAI compatible) with retries and exponential backoff.
@@ -271,14 +350,14 @@ def query_kimi(
 
     last_err = "Kimi API exceeded max retries."
     for endpoint in endpoints:
-        delay = 1.0
-        for attempt in range(max_retries):
+        delay = 0.5
+        for attempt in range(max_retries + 1):
             try:
                 resp = requests.post(endpoint, json=data, headers=headers, timeout=timeout)
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
-                    return {"model_name": model, "content": content}
-                elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    return {"model_name": model, "content": extract_text_content(content)}
+                elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
                     logging.warning(f"Kimi API {resp.status_code} received on {endpoint}. Retrying in {delay}s...")
                     time.sleep(delay)
                     delay *= 2
@@ -287,7 +366,7 @@ def query_kimi(
                     last_err = f"Kimi API Error ({resp.status_code}): {resp.text}"
                     break
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                if attempt < max_retries - 1:
+                if attempt < max_retries:
                     logging.warning(f"Kimi network error: {e}. Retrying in {delay}s...")
                     time.sleep(delay)
                     delay *= 2
@@ -323,7 +402,8 @@ def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3,
             try:
                 resp = requests.post("https://api.mistral.ai/v1/chat/completions", json=data, headers=headers, timeout=timeout)
                 if resp.status_code == 200:
-                    return resp.json()["choices"][0]["message"]["content"]
+                    raw_c = resp.json()["choices"][0]["message"]["content"]
+                    return extract_text_content(raw_c)
                 elif resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                     logging.warning(f"Mistral Judge ({model}) {resp.status_code} received. Retrying in {delay}s...")
                     time.sleep(delay)
@@ -350,20 +430,22 @@ def query_mistral_judge(prompt: str, mistral_api_key: str, max_retries: int = 3,
     return f"Error: The Mistral judge failed to provide an evaluation ({last_error})."
 
 
-def format_judge_evaluation(judgment: str) -> str:
+def format_judge_evaluation(judgment: Any) -> str:
     """
     Extracts reasoning and formats evaluation from judge response (JSON or plain text).
+    - Safely converts list or non-string inputs using extract_text_content.
     - Unwraps JSON {"winner": ..., "reasoning": ...} to extract clean markdown text.
     - Strips code fences (```json ... ```) if present.
     - Unindents lines to prevent accidental <pre><code> block formatting in markdown.
     - Converts LaTeX math delimiters \\( \\) -> $ and \\[ \\] -> $$ for Streamlit KaTeX rendering.
     """
-    if not judgment or not isinstance(judgment, str):
+    text = extract_text_content(judgment)
+    if not text or not text.strip():
         return ""
 
     reasoning = ""
     try:
-        match = re.search(r"\{[\s\S]*?\}", judgment)
+        match = re.search(r"\{[\s\S]*?\}", text)
         if match:
             json_str = match.group(0)
             data = None
@@ -381,15 +463,15 @@ def format_judge_evaluation(judgment: str) -> str:
         pass
 
     if not reasoning:
-        reason_match = re.search(r'"reasoning"\s*:\s*"([\s\S]*?)"\s*\}', judgment)
+        reason_match = re.search(r'"reasoning"\s*:\s*"([\s\S]*?)"\s*\}', text)
         if reason_match:
             reasoning = reason_match.group(1)
         else:
-            reasoning = re.sub(r"^```(?:json)?\s*", "", judgment.strip(), flags=re.MULTILINE)
+            reasoning = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
             reasoning = re.sub(r"\s*```$", "", reasoning.strip(), flags=re.MULTILINE)
 
     if not reasoning.strip():
-        reasoning = judgment
+        reasoning = text
 
     # Dedent / trim lines so leading spaces don't trigger markdown code blocks
     lines = [line.strip() for line in reasoning.splitlines()]
@@ -446,27 +528,20 @@ Use the short-term context for immediate follow-ups ("rewrite that", "fix the bu
 Use the long-term memory only when the user refers to something discussed in a previous session.
 """
 
-    fast_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key) if google_api_key else None
-    gemini_model_name = "gemini-3.8-flash"
-
     def _safe_gemini():
-        if not fast_llm:
-            return {"model_name": gemini_model_name, "error": "Gemini API key not configured."}
-        try:
-            return fast_llm.invoke(full_prompt_with_context).content
-        except Exception as e:
-            logging.error(f"Gemini generation error: {e}")
-            return {"error": f"Gemini Error: {e}"}
+        if not google_api_key:
+            return {"model_name": "gemini-3.8-flash", "error": "Gemini API key not configured."}
+        return query_gemini(full_prompt_with_context, google_api_key, preferred_model="gemini-3.8-flash")
 
     def _execute_model(m_type: str, other_m_type: str = ""):
         mt = m_type.lower()
         res = None
         if "deepseek" in mt:
-            res = query_deepseek(full_prompt_with_context, deepseek_api_key, model="deepseek-flash")
+            res = query_deepseek(full_prompt_with_context, deepseek_api_key, model="deepseek-flash", max_retries=1, timeout=10)
         elif "kimi" in mt or "moonshot" in mt:
-            res = query_kimi(full_prompt_with_context, kimi_api_key, model="kimi-k3")
+            res = query_kimi(full_prompt_with_context, kimi_api_key, model="kimi-k3", max_retries=1, timeout=10)
         elif "groq" in mt or "llama" in mt:
-            res = query_groq(full_prompt_with_context, groq_api_key)
+            res = query_groq(full_prompt_with_context, groq_api_key, max_retries=1, timeout=12)
         else:
             res = _safe_gemini()
 
@@ -476,27 +551,32 @@ Use the long-term memory only when the user refers to something discussed in a p
             logging.warning(f"Contender {m_type} failed: {err_msg}. Attempting fallback...")
             # If DeepSeek or Kimi failed:
             if "deepseek" in mt or "kimi" in mt or "moonshot" in mt:
-                # Fallback to Groq if key provided and Groq is not the other contender
                 if groq_api_key and "groq" not in other_m_type.lower() and "llama" not in other_m_type.lower():
-                    g_res = query_groq(full_prompt_with_context, groq_api_key)
+                    g_res = query_groq(full_prompt_with_context, groq_api_key, max_retries=1, timeout=10)
                     if isinstance(g_res, dict) and "content" in g_res:
                         g_res["model_name"] = f"Groq (Fallback for {m_type})"
                         return g_res
-                # Fallback to Gemini if key provided and Gemini is not the other contender
                 if google_api_key and "gemini" not in other_m_type.lower():
                     gem_res = _safe_gemini()
-                    if isinstance(gem_res, str):
-                        return {"model_name": f"Gemini 3.8 Flash (Fallback for {m_type})", "content": gem_res}
+                    if isinstance(gem_res, dict) and "content" in gem_res:
+                        gem_res["model_name"] = f"Gemini (Fallback for {m_type})"
+                        return gem_res
             elif "groq" in mt or "llama" in mt:
-                # If Groq failed, try Gemini if not the other contender
                 if google_api_key and "gemini" not in other_m_type.lower():
                     gem_res = _safe_gemini()
-                    if isinstance(gem_res, str):
-                        return {"model_name": "Gemini 3.8 Flash (Fallback for Groq)", "content": gem_res}
+                    if isinstance(gem_res, dict) and "content" in gem_res:
+                        gem_res["model_name"] = "Gemini (Fallback for Groq)"
+                        return gem_res
+            elif "gemini" in mt:
+                if groq_api_key and "groq" not in other_m_type.lower() and "llama" not in other_m_type.lower():
+                    g_res = query_groq(full_prompt_with_context, groq_api_key, max_retries=1, timeout=10)
+                    if isinstance(g_res, dict) and "content" in g_res:
+                        g_res["model_name"] = "Groq (Fallback for Gemini)"
+                        return g_res
 
         return res
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_a = executor.submit(_execute_model, candidate_a_type, candidate_b_type)
         future_b = executor.submit(_execute_model, candidate_b_type, candidate_a_type)
         result_a = future_a.result()
@@ -522,19 +602,42 @@ Use the long-term memory only when the user refers to something discussed in a p
             m_name = res.get("model_name", "Groq") if isinstance(res, dict) else "Groq"
             return m_name, "Groq"
         else:
-            return gemini_model_name, "Gemini"
+            m_name = res.get("model_name", "Gemini") if isinstance(res, dict) else "Gemini"
+            return m_name, "Gemini"
 
     model_name_a, label_a = _extract_model_and_label(candidate_a_type, result_a)
     model_name_b, label_b = _extract_model_and_label(candidate_b_type, result_b)
 
-    text_a = result_a["error"] if has_err_a else (result_a.get("content", "") if isinstance(result_a, dict) else str(result_a or ""))
-    text_b = result_b["error"] if has_err_b else (result_b.get("content", "") if isinstance(result_b, dict) else str(result_b or ""))
+    text_a = result_a["error"] if has_err_a else extract_text_content(result_a.get("content", ""))
+    text_b = result_b["error"] if has_err_b else extract_text_content(result_b.get("content", ""))
     judge_source = "Automated Selection"
 
     # Case 1: Both models failed
     if has_err_a and has_err_b:
-        err_msg = f"### ⚠️ Both models failed to respond.\n\n- **{label_a}:** {text_a}\n- **{label_b}:** {text_b}"
-        return {"display": err_msg, "memory_text": ""}
+        err_msg = (
+            f"### ⚠️ Both Candidate Models Failed to Respond\n\n"
+            f"The Mixture-of-Agents arena could not retrieve valid responses from either candidate:\n\n"
+            f"- **Candidate A ({label_a} - {model_name_a}):**\n  > `{text_a}`\n\n"
+            f"- **Candidate B ({label_b} - {model_name_b}):**\n  > `{text_b}`\n\n"
+            f"💡 **Suggested Next Steps:**\n"
+            f"1. **Check API Keys:** Ensure your `GOOGLE_API_KEY` and `GROQ_API_KEY` are entered in `.streamlit/secrets.toml` or the sidebar.\n"
+            f"2. **Quota / Rate Limits:** If a model reports `429 RESOURCE_EXHAUSTED` or `Rate limit exceeded`, try selecting Groq or Gemini in the sidebar.\n"
+            f"3. **Retry:** Re-send your query in a few moments."
+        )
+        return {
+            "display":       err_msg,
+            "memory_text":   "",
+            "winner_name":   "None",
+            "winner_model":  "Unavailable",
+            "winner_answer": err_msg,
+            "loser_name":    "None",
+            "loser_model":   "Unavailable",
+            "loser_answer":  "",
+            "judgment":      "Both candidate models encountered errors.",
+            "judge_source":  "Diagnostic Error Handler",
+            "eval_scores":   {"winner": {"overall": 0, "clarity": 0, "completeness": 0, "rubric_grade": "F"}},
+            "has_error":     True,
+        }
 
     # Case 2: Model A failed, Model B succeeded
     if has_err_a and not has_err_b:
@@ -621,52 +724,64 @@ Instructions:
    If JSON is not possible, begin your response with "Winner: A" or "Winner: B".
 """
         print(f"---JUDGE: Calling {judge_type} for evaluation---")
+        judgment = None
+        judge_source = "Arbitration Judge"
+
         if judge_type == "gemini":
-            judge_source = "Gemini 3.8 Flash"
-            if fast_llm:
-                try:
-                    judgment = fast_llm.invoke(judge_prompt).content
-                except Exception as e:
-                    judgment = f"Error: {e}"
-            else:
-                judgment = "Error: Gemini API key not configured."
+            judge_source = "Gemini"
+            gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-2.5-flash", timeout=12)
+            if "content" in gem_j:
+                judgment = gem_j["content"]
         elif judge_type == "groq":
             judge_source = f"Groq {GROQ_MODEL_LARGE}"
-            groq_judge_res = query_groq(judge_prompt, groq_api_key, preferred_model=GROQ_MODEL_LARGE)
+            groq_judge_res = query_groq(judge_prompt, groq_api_key, max_retries=1, timeout=10, preferred_model=GROQ_MODEL_LARGE)
             if isinstance(groq_judge_res, dict) and "content" in groq_judge_res:
                 judgment = groq_judge_res["content"]
-            else:
-                judgment = f"Error: {groq_judge_res.get('error', 'Groq judge failed')}"
         else:
-            judgment = query_mistral_judge(judge_prompt, mistral_api_key)
-            judge_source = "Mistral"
+            mistral_res = query_mistral_judge(judge_prompt, mistral_api_key, max_retries=1, timeout=10)
+            if not mistral_res.startswith("Error:"):
+                judgment = mistral_res
+                judge_source = "Mistral"
 
-            # Fallback to Gemini judge if Mistral is rate-limited or fails
-            if judgment.startswith("Error:"):
-                logging.warning(f"Mistral judge failed: {judgment}. Falling back to Gemini as secondary judge...")
-                try:
-                    judge_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
-                    gemini_judgment = judge_llm.invoke(judge_prompt).content
-                    judgment = gemini_judgment
+        # Fallback to secondary judge if primary judge failed
+        if not judgment or judgment.startswith("Error:"):
+            logging.warning(f"Primary judge ({judge_type}) failed. Falling back to Gemini as secondary judge...")
+            if google_api_key:
+                gem_j = query_gemini(judge_prompt, google_api_key, preferred_model="gemini-3.8-flash")
+                if isinstance(gem_j, dict) and "content" in gem_j:
+                    judgment = gem_j["content"]
                     judge_source = "Gemini (Fallback Judge)"
-                except Exception as e:
-                    logging.error(f"Gemini fallback judge error: {e}")
-                    judge_source = "Automated Fallback"
+
+            if (not judgment or judgment.startswith("Error:")) and groq_api_key:
+                groq_judge_res = query_groq(judge_prompt, groq_api_key, max_retries=1, timeout=8, preferred_model=GROQ_MODEL_FAST)
+                if isinstance(groq_judge_res, dict) and "content" in groq_judge_res:
+                    judgment = groq_judge_res["content"]
+                    judge_source = "Groq (Fallback Judge)"
+
+        # Tertiary fallback: deterministic multi-dimensional rubric scoring
+        if not judgment or judgment.startswith("Error:"):
+            score_a = rubric_a.get("overall", 50)
+            score_b = rubric_b.get("overall", 50)
+            val_a = score_a if eval_label_a == label_a else score_b
+            val_b = score_b if eval_label_a == label_a else score_a
+            chosen_ab = "A" if val_a >= val_b else "B"
+            judge_source = "Deterministic Rubric Arbitration"
+            judgment = f'{{"winner": "{chosen_ab}", "reasoning": "Candidate {chosen_ab} demonstrated superior rubric marks ({max(val_a, val_b)}% vs {min(val_a, val_b)}%) across multi-dimensional criteria."}}'
 
         # Robust winner parsing (JSON or regex fallback)
         chosen_ab = "A"
         try:
-            json_match = re.search(r"\{[\s\S]*?\"winner\"\s*:\s*\"([AB])\"[\s\S]*?\}", judgment, re.IGNORECASE)
+            json_match = re.search(r"\{[\s\S]*?\"winner\"\s*:\s*\"([AB])\"[\s\S]*?\}", str(judgment), re.IGNORECASE)
             if json_match:
                 chosen_ab = json_match.group(1).upper()
             else:
-                regex_match = re.search(r"winner\s*:\s*(?:response\s+)?([AB])\b", judgment, re.IGNORECASE)
+                regex_match = re.search(r"winner\s*:\s*(?:response\s+)?([AB])\b", str(judgment), re.IGNORECASE)
                 if regex_match:
                     chosen_ab = regex_match.group(1).upper()
                 else:
-                    if f"Winner: {eval_label_a}" in judgment or f"winner: {eval_label_a.lower()}" in judgment.lower():
+                    if f"Winner: {eval_label_a}" in str(judgment) or f"winner: {eval_label_a.lower()}" in str(judgment).lower():
                         chosen_ab = "A"
-                    elif f"Winner: {eval_label_b}" in judgment or f"winner: {eval_label_b.lower()}" in judgment.lower():
+                    elif f"Winner: {eval_label_b}" in str(judgment) or f"winner: {eval_label_b.lower()}" in str(judgment).lower():
                         chosen_ab = "B"
         except Exception:
             chosen_ab = "A"
@@ -715,6 +830,10 @@ Instructions:
 
     final_output  = f"### 🏆 Judged Best Answer ({winner_name})\n"
     final_output += f"#### Model: {chosen_model_name}\n\n{chosen_answer}\n\n"
+    if has_err_a or has_err_b:
+        failed_label = label_a if has_err_a else label_b
+        failed_err = text_a if has_err_a else text_b
+        final_output += f"> ⚠️ **Model Notice:** {failed_label} encountered an issue for this request (`{failed_err}`). {winner_name} was promoted as the winning answer.\n\n"
     final_output += f"### 🧠 Judge's Evaluation (from {judge_source})\n{judgment_clean}\n\n"
     final_output += f"**📊 Evaluation Rubric:** Quality: **{rubric_winner['overall']}%** (`{rubric_winner['rubric_grade']}`) | Clarity: **{rubric_winner['clarity']}%** | Completeness: **{rubric_winner['completeness']}%**\n\n---\n\n"
     final_output += f"### Other Response ({loser_name})\n\n"
@@ -840,14 +959,14 @@ def promote_candidate_as_winner(winner_cand: str, comp_data: dict) -> tuple[str,
 def image_generation_tool(prompt: str, google_api_key: str, pollinations_token: str) -> dict:
     logging.info(f"---TOOL: Generating Image for prompt: '{prompt}'---")
     try:
-        enhancer_llm    = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
         enhancer_prompt = f"""
 You are a "Top Class" prompt engineer. Rewrite the user's simple prompt into a hyper-detailed,
 vibrant image generation description (Subject, Style, Lighting, Technicals).
 
 User's prompt: "{prompt}"
 """
-        final_prompt   = enhancer_llm.invoke(enhancer_prompt).content.strip()
+        enhancer_res = query_gemini(enhancer_prompt, google_api_key, preferred_model="gemini-3.8-flash", timeout=12)
+        final_prompt = enhancer_res.get("content", prompt).strip()
         encoded_prompt = quote_plus(final_prompt)
         url            = f"https://gen.pollinations.ai/image/{encoded_prompt}?model=gptimage"
         headers        = {"Authorization": f"Bearer {pollinations_token}"}
@@ -1276,14 +1395,15 @@ Return ONLY the tool name.
     # Step 1: Try primary router (Gemini)
     if decision is None and google_api_key:
         try:
-            router_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
-            response = router_llm.invoke(router_prompt).content.strip()
-            if "web_search_tool" in response:
-                decision = "web_search"
-            elif "image_generation_tool" in response:
-                decision = "image_generator"
-            elif "comparison_tool" in response:
-                decision = "comparison_chat"
+            gem_res = query_gemini(router_prompt, google_api_key, timeout=10)
+            if isinstance(gem_res, dict) and "content" in gem_res:
+                response = gem_res["content"].strip()
+                if "web_search_tool" in response:
+                    decision = "web_search"
+                elif "image_generation_tool" in response:
+                    decision = "image_generator"
+                elif "comparison_tool" in response:
+                    decision = "comparison_chat"
         except Exception as e:
             logging.warning(f"Primary Gemini router error: {e}. Attempting Groq fallback...")
 
