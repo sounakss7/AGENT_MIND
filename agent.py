@@ -50,7 +50,7 @@ from security_guard import input_guard, output_guard, audit_logger, wrap_untrust
 # MODEL BENCHMARKS MATRIX
 # =======================================================================================
 MODEL_BENCHMARKS = {
-    "Gemini 2.5 Flash": {
+    "Gemini 3.8 Flash": {
         "provider": "Google",
         "mmlu": "82.0%",
         "math": "67.7%",
@@ -446,8 +446,8 @@ Use the short-term context for immediate follow-ups ("rewrite that", "fix the bu
 Use the long-term memory only when the user refers to something discussed in a previous session.
 """
 
-    fast_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key) if google_api_key else None
-    gemini_model_name = "gemini-2.5-flash"
+    fast_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key) if google_api_key else None
+    gemini_model_name = "gemini-3.8-flash"
 
     def _safe_gemini():
         if not fast_llm:
@@ -486,13 +486,13 @@ Use the long-term memory only when the user refers to something discussed in a p
                 if google_api_key and "gemini" not in other_m_type.lower():
                     gem_res = _safe_gemini()
                     if isinstance(gem_res, str):
-                        return {"model_name": f"Gemini 2.5 Flash (Fallback for {m_type})", "content": gem_res}
+                        return {"model_name": f"Gemini 3.8 Flash (Fallback for {m_type})", "content": gem_res}
             elif "groq" in mt or "llama" in mt:
                 # If Groq failed, try Gemini if not the other contender
                 if google_api_key and "gemini" not in other_m_type.lower():
                     gem_res = _safe_gemini()
                     if isinstance(gem_res, str):
-                        return {"model_name": "Gemini 2.5 Flash (Fallback for Groq)", "content": gem_res}
+                        return {"model_name": "Gemini 3.8 Flash (Fallback for Groq)", "content": gem_res}
 
         return res
 
@@ -622,7 +622,7 @@ Instructions:
 """
         print(f"---JUDGE: Calling {judge_type} for evaluation---")
         if judge_type == "gemini":
-            judge_source = "Gemini 2.5 Flash"
+            judge_source = "Gemini 3.8 Flash"
             if fast_llm:
                 try:
                     judgment = fast_llm.invoke(judge_prompt).content
@@ -645,7 +645,7 @@ Instructions:
             if judgment.startswith("Error:"):
                 logging.warning(f"Mistral judge failed: {judgment}. Falling back to Gemini as secondary judge...")
                 try:
-                    judge_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+                    judge_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
                     gemini_judgment = judge_llm.invoke(judge_prompt).content
                     judgment = gemini_judgment
                     judge_source = "Gemini (Fallback Judge)"
@@ -840,7 +840,7 @@ def promote_candidate_as_winner(winner_cand: str, comp_data: dict) -> tuple[str,
 def image_generation_tool(prompt: str, google_api_key: str, pollinations_token: str) -> dict:
     logging.info(f"---TOOL: Generating Image for prompt: '{prompt}'---")
     try:
-        enhancer_llm    = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+        enhancer_llm    = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
         enhancer_prompt = f"""
 You are a "Top Class" prompt engineer. Rewrite the user's simple prompt into a hyper-detailed,
 vibrant image generation description (Subject, Style, Lighting, Technicals).
@@ -941,7 +941,7 @@ def file_analysis_tool(
     history: Optional[List[BaseMessage]] = None,
 ):
     print("---TOOL: Executing Empowered File Analysis---")
-    streaming_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key, streaming=True)
+    streaming_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key, streaming=True)
 
     safe_file_content = wrap_untrusted_data(file_content_as_text[:40000], "UPLOADED_FILE")
 
@@ -987,7 +987,7 @@ def web_search_tool(query: str, tavily_api_key: str, google_api_key: str) -> str
         search_content = "\n".join(formatted_results)
         safe_search_content = wrap_untrusted_data(search_content, "WEB_SEARCH")
 
-        analyzer_llm    = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+        analyzer_llm    = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
         analysis_prompt = f"""
 You are an expert research analyst. Answer the query based ONLY on the search results provided.
 Cite the source titles and markdown links where relevant.
@@ -1276,7 +1276,7 @@ Return ONLY the tool name.
     # Step 1: Try primary router (Gemini)
     if decision is None and google_api_key:
         try:
-            router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_api_key)
+            router_llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", google_api_key=google_api_key)
             response = router_llm.invoke(router_prompt).content.strip()
             if "web_search_tool" in response:
                 decision = "web_search"

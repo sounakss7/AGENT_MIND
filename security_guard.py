@@ -744,12 +744,22 @@ class AuditLogger:
         """
         client = self._get_client()
         if client is None:
-            return {
-                "total":            0,
+            events = self.get_events(session_id=session_id, limit=1000)
+            today  = str(date.today())
+            stats  = {
+                "total":            len(events),
                 "by_severity":      {"INFO": 0, "WARN": 0, "BLOCK": 0},
                 "by_type":          {},
                 "injections_today": 0,
             }
+            for e in events:
+                sev = e.get("severity", "INFO")
+                typ = e.get("event_type", "UNKNOWN")
+                stats["by_severity"][sev] = stats["by_severity"].get(sev, 0) + 1
+                stats["by_type"][typ]     = stats["by_type"].get(typ, 0) + 1
+                if typ == "PROMPT_INJECTION" and e.get("timestamp", "").startswith(today):
+                    stats["injections_today"] += 1
+            return stats
 
         try:
             from qdrant_client.models import Filter, FieldCondition, MatchValue, Range

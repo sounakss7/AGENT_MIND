@@ -7,7 +7,7 @@ flowchart TD
     InputGuard -- "Passes" --> CheckFile{📂 File Uploaded?}
     
     %% Routing logic %%
-    CheckFile -- Yes --> FileTool[🔍 File Analysis Tool\n Gemini 2.5 Flash]
+    CheckFile -- Yes --> FileTool[🔍 File Analysis Tool\n Gemini 3.8 Flash]
     CheckFile -- No --> Context[🧠 Fetch Context\n short-term & Qdrant long-term]
     
     Context --> Router{🤖 LangGraph Router}

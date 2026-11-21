@@ -139,7 +139,7 @@ def test_comparison_tool_auto_declares_gemini_when_groq_fails():
         assert "🏆 Judged Best Answer (Gemini)" in res["display"]
         assert "Gemini successful response." in res["display"]
         assert "Groq (Failed)" in res["display"]
-        assert res["memory_text"] == "[gemini-2.5-flash]: Gemini successful response."
+        assert res["memory_text"] == "[gemini-3.8-flash]: Gemini successful response."
         mock_judge.assert_not_called()
 
 
@@ -182,7 +182,7 @@ def test_comparison_tool_blind_evaluation_prompt_and_json_parsing():
 
 
 def test_comparison_tool_falls_back_to_gemini_judge_when_mistral_errors():
-    """Verify judge falls back to Gemini 2.5 Flash when Mistral returns HTTP 429/error."""
+    """Verify judge falls back to Gemini 3.8 Flash when Mistral returns HTTP 429/error."""
     with patch("agent.ChatGoogleGenerativeAI") as mock_gemini_cls, \
          patch("agent.query_groq") as mock_groq, \
          patch("agent.query_mistral_judge") as mock_judge, \
@@ -210,7 +210,7 @@ def test_comparison_tool_falls_back_to_gemini_judge_when_mistral_errors():
         # Judge source should indicate Gemini Fallback Judge
         assert "🧠 Judge's Evaluation (from Gemini (Fallback Judge))" in res["display"]
         assert "🏆 Judged Best Answer (Gemini)" in res["display"]
-        assert res["memory_text"] == "[gemini-2.5-flash]: Gemini candidate response."
+        assert res["memory_text"] == "[gemini-3.8-flash]: Gemini candidate response."
 
 
 
@@ -480,7 +480,7 @@ def test_promote_candidate_as_winner():
     """Verify promote_candidate_as_winner formats selected winner correctly."""
     comp_data = {
         "winner_name": "Candidate A",
-        "winner_model": "gemini-2.5-flash",
+        "winner_model": "gemini-3.8-flash",
         "winner_answer": "Answer A text.",
         "loser_name": "Candidate B",
         "loser_model": "openai/gpt-oss-120b",
